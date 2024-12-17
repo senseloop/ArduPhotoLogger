@@ -152,7 +152,7 @@ function handlePhotoCapture(cameraFeedbackMessage) {
         timestamp : timestamp,
         CameraFeedbackMessage : cameraFeedbackMessage,
         GimbalOrientation : datastore[265],
-        SystemTime : datastore[2],
+        SystemTime : datastore[42],
         Custom : customFields  
     };
 
@@ -213,6 +213,26 @@ app.get('/api/cleardatabase', (req,res) => {
     
     database.clearDatabase();
     res.send("Database is cleared")
+});
+
+app.get('/api/datastore/:index', (req, res) => {
+    const index = req.params.index; // Get the index from the request parameters
+
+    // Validate the index is a number
+    if (isNaN(index)) {
+        return res.status(400).json({ error: 'Index must be a number' });
+    }
+
+    // Check if the specified index exists in the datastore
+    if (!datastore.hasOwnProperty(index)) {
+        return res.status(404).json({ error: `No data found at index ${index}` });
+    }
+
+    // Retrieve the data at the specified index
+    const data = datastore[index];
+
+    // Send the data as the response
+    res.json(data);
 });
 
 // Define an API endpoint to return a comma-separated list of PhotoCapture event records with selected fields
