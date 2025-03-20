@@ -4,6 +4,7 @@ const { MavLinkPacketParser, MavLinkPacketSplitter, MavLinkPacketRegistry, minim
 const express = require('express');
 const { Console } = require('console');
 const fs = require('fs');
+const os = require('os');
 
 const cors = require('cors');
 
@@ -17,6 +18,7 @@ app.use(cors());
 
 const db = database();
 database.clearDatabase();
+console.log(`My IP is ${getLocalIP()}`);
 
 let datastore = {};
 
@@ -24,7 +26,10 @@ let datastore = {};
 const udpSocket = dgram.createSocket('udp4');
 
 // Listen for messages on port 14550
-udpSocket.bind(14555, '0.0.0.0');
+udpSocket.bind(14559, '0.0.0.0');
+// udpSocket.bind(14552, '10.79.200.217');
+
+
 
 // Custom Readable stream that listens for messages from UDP socket
 class UDPReadable extends Readable {
@@ -75,6 +80,18 @@ function convertTimestringToISO8601(input) {
      return date.toISOString();
 }
 
+function getLocalIP() {
+    const nets = os.networkInterfaces();
+    for (const name of Object.keys(nets)) {
+        for (const net of nets[name]) {
+            if (net.family === 'IPv4' && !net.internal) {
+                return net.address;
+            }
+        }
+    }
+    return 'Unknown';
+}
+
 
 //console.log(REGISTRY);
 // port.on('data', packet => {
@@ -95,6 +112,7 @@ const getData = (packet) => {
     const clazz = REGISTRY[packet.header.msgid]
 
     const result = packet.protocol.data(packet.payload, clazz);
+
     result.msg_name = clazz.MSG_NAME;
     //result.msg_name = packet.header.msgid;
     result[clazz.MSG_NAME] = packet.protocol.data(packet.payload, clazz);
@@ -115,12 +133,17 @@ const getData = (packet) => {
 
 
 port.on('data', packet => {
-    const key = packet.header.msgid;
+    // console.log(packet);
+    const key = `${packet.header.msgid}-${packet.header.sysid}-${packet.header.compid}`;
     const message = getData(packet);
+    const msgid = packet.header.msgid;
+    // console.log(message);
 
     //Debug
     if (!datastore.hasOwnProperty(key)) {
-        console.log("New message type ", message.msg_name , " (id: ", packet.header.msgid, ")");
+        process.stdout.clearLine();
+        process.stdout.cursorTo(0);
+        console.log(`New message type ${message.msg_name} (${msgid}), from: ${packet.header.sysid}-${packet.header.compid}`);
     }
     datastore[key] = message;
     if(key == 180){
@@ -175,7 +198,7 @@ function handlePhotoCapture(cameraFeedbackMessage) {
 let iteration = 0;
 let count = 0;
 function prog() {
-    if (iteration === 50) {
+    if (iteration > 2 ) {
         process.stdout.write('*');
         iteration = 0;
         count++;
