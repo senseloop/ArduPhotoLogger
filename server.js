@@ -21,6 +21,7 @@ database.clearDatabase();
 console.log(`My IP is ${getLocalIP()}`);
 
 let datastore = {};
+let newMessageList = {};
 
 // Create a UDP socket
 const udpSocket = dgram.createSocket('udp4');
@@ -40,6 +41,7 @@ class UDPReadable extends Readable {
     }
 
     handleMessage(msg, rinfo) {
+        // console.log("---");
         // Push the received message into the stream
         this.push(msg);
     }
@@ -133,25 +135,59 @@ const getData = (packet) => {
 
 
 port.on('data', packet => {
-    // console.log(packet);
-    const key = `${packet.header.msgid}-${packet.header.sysid}-${packet.header.compid}`;
+    
+    const key = packet.header.msgid;
+    // console.log(key);
+    // if (key == 76) {
+    //     console.log(packet);
+    // }
+    // const key = `${packet.header.msgid}-${packet.header.sysid}-${packet.header.compid}`;
+    // console.log(key);
     const message = getData(packet);
     const msgid = packet.header.msgid;
     // console.log(message);
-
-    //Debug
-    if (!datastore.hasOwnProperty(key)) {
+    
+    
+    // Sjekker om man tidligere har mottatt en melding med samme msgid, sysid og compid
+    // Hvis ikke, skrives det ut en melding til konsollen
+    const longKey = `${packet.header.msgid}-${packet.header.sysid}-${packet.header.compid}`;
+    if (!newMessageList.hasOwnProperty(longKey)) {
         process.stdout.clearLine();
         process.stdout.cursorTo(0);
-        console.log(`New message type ${message.msg_name} (${msgid}), from: ${packet.header.sysid}-${packet.header.compid}`);
+        const currentTime = new Date().toLocaleTimeString('en-US', { hour12: false }); // Local time in HH:mm:ss format
+        const target = getTargetSystemAndComponent(message)
+        
+        console.log(`[${currentTime}] First message: ${message.msg_name} (${msgid}), from: ${packet.header.sysid}-${packet.header.compid} ${target ? `to: ${target.targetSystem}-${target.targetComponent}` : ''}`);
+
+        newMessageList[longKey] = true;
     }
+
+    //Overskriver data i datastore med ny melding
     datastore[key] = message;
+
+    //Håndterer mottak av nyt PhotoCapture event
     if(key == 180){
         handlePhotoCapture(message);
-        //console.log(datastore[265]);
     }
+
+    // if(key==203){
+    //     console.log("Jul i svingen");
+    // }
+
+    // if(key == 76){
+    //     console.log(message);
+    // }
+
+    //prog() printer stjerner for å vise at prosessen fortsatt går. Ny stjerne for ca hver 5. melding 
     prog();
 })
+
+function getTargetSystemAndComponent(message) {
+    if ('targetSystem' in message && 'targetComponent' in message) {
+        return { targetSystem: message.targetSystem, targetComponent: message.targetComponent };
+    }
+    return null; // Return null if the properties do not exist
+}
 
 function handlePhotoCapture(cameraFeedbackMessage) {
 
@@ -180,7 +216,7 @@ function handlePhotoCapture(cameraFeedbackMessage) {
     };
 
     // Perform any additional processing or logging
-    console.log('PhotoCapture event:', photoCaptureEvent);
+    // console.log('PhotoCapture event:', photoCaptureEvent);
 
 
     // You can store or send this event as needed
@@ -198,7 +234,7 @@ function handlePhotoCapture(cameraFeedbackMessage) {
 let iteration = 0;
 let count = 0;
 function prog() {
-    if (iteration > 2 ) {
+    if (iteration > 5 ) {
         process.stdout.write('*');
         iteration = 0;
         count++;
