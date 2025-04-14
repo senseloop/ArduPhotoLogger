@@ -4,21 +4,37 @@ const { MavLinkPacketParser, MavLinkPacketSplitter, MavLinkPacketRegistry, minim
 const express = require('express');
 const { Console } = require('console');
 const fs = require('fs');
-const os = require('os');
+// const os = require('os');
+
+const WebSocket = require('ws');
+const http = require('http');
+
+const { router, init } = require('./api');
 
 const cors = require('cors');
 
 const database = require('./database');
 
 const app = express();
+
+app.use('/api', router);
 app.use(express.json());
 app.use(cors());
 
-
+const {
+    convertTimestringToISO8601,
+    getLocalIP,
+    replaceBigIntWithString
+} = require('./utils')
 
 const db = database();
 database.clearDatabase();
 console.log(`My IP is ${getLocalIP()}`);
+
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server });
+//Web socket clients
+let clients = [];
 
 let datastore = {};
 let newMessageList = {};
@@ -26,10 +42,33 @@ let newMessageList = {};
 // Create a UDP socket
 const udpSocket = dgram.createSocket('udp4');
 
-// Listen for messages on port 14550
+// Listen for messages assigned port
 udpSocket.bind(14559, '0.0.0.0');
-// udpSocket.bind(14552, '10.79.200.217');
 
+//Web sockets stuff..
+wss.on('connection', (ws) => {
+    ws.subscriptions = new Set();
+
+    clients.push(ws);
+    console.log('Client connected');
+
+    ws.on('message', (message) => {
+        try {
+            const data = JSON.parse(message);
+            if (data.subscribe && Array.isArray(data.subscribe)) {
+                ws.subscriptions = new Set(data.subscribe.map(String));
+                console.log(`Client subscriptions updated: ${[...ws.subscriptions].join(', ')}`);
+            }
+        } catch (e) {
+            console.error('Invalid message from client:', message);
+        }
+    });
+
+    ws.on('close', () => {
+        clients = clients.filter(client => client !== ws);
+        console.log('Client disconnected');
+    });
+});
 
 
 // Custom Readable stream that listens for messages from UDP socket
@@ -54,55 +93,12 @@ class UDPReadable extends Readable {
 const udpReadable = new UDPReadable(udpSocket);
 const port = udpReadable.pipe(new MavLinkPacketSplitter()).pipe(new MavLinkPacketParser());
 
+
 const REGISTRY = {
     ...minimal.REGISTRY,
     ...common.REGISTRY,
     ...ardupilotmega.REGISTRY,
 }
-
-function convertTimestringToISO8601(input) {
-     // Ensure the input is a BigInt
-     let microsecondsBigInt = input;
-
-     // If the input ends with 'n', convert it to a BigInt by slicing the 'n' off
-     if (typeof input === 'string' && input.endsWith('n')) {
-         microsecondsBigInt = BigInt(input.slice(0, -1));
-     }
- 
-     // Convert microseconds BigInt to milliseconds BigInt
-     const millisecondsBigInt = microsecondsBigInt / 1000n;
- 
-     // Convert milliseconds BigInt to number for Date object (safe if within the range of Number)
-     const milliseconds = Number(millisecondsBigInt);
- 
-     // Create a Date object
-     const date = new Date(milliseconds);
- 
-     // Return the ISO 8601 formatted string
-     return date.toISOString();
-}
-
-function getLocalIP() {
-    const nets = os.networkInterfaces();
-    for (const name of Object.keys(nets)) {
-        for (const net of nets[name]) {
-            if (net.family === 'IPv4' && !net.internal) {
-                return net.address;
-            }
-        }
-    }
-    return 'Unknown';
-}
-
-
-//console.log(REGISTRY);
-// port.on('data', packet => {
-//     console.log('Raw packet:', packet.header.msgid);
-// })
-
-
-//const subscribedMessages = [110, 111, 87, 11030, 147, 22, 193, 136, 168, 178, 164, 24, 137, 29, 129, 116, 27, 65, 36, 74, 42, 62, 152, 125, 30, 1130, 163, 241, 163, 2, 0, 1, 11, 255]
-//const subscribedMessages = [] 
 
 
 const getData = (packet) => {
@@ -119,30 +115,11 @@ const getData = (packet) => {
     //result.msg_name = packet.header.msgid;
     result[clazz.MSG_NAME] = packet.protocol.data(packet.payload, clazz);
     return result;
-
-    //return {clazz: packet.protocol.data(packet.payload, clazz)};
 }
-
-
-
-// RANGEFINDER : 173
-// LOCAL_POSITION_NED : 32
-// POSITION_TARGET_GLOBAL_INT : 87
-// ATTITUDE: 30
-// GLOBAL_POSITION_INT : 33
-// MOUNT_ORIENTATION : 265
-// MOUNT_STATUS : 158
-
 
 port.on('data', packet => {
     
     const key = packet.header.msgid;
-    // console.log(key);
-    // if (key == 76) {
-    //     console.log(packet);
-    // }
-    // const key = `${packet.header.msgid}-${packet.header.sysid}-${packet.header.compid}`;
-    // console.log(key);
     const message = getData(packet);
     const msgid = packet.header.msgid;
     // console.log(message);
@@ -150,6 +127,8 @@ port.on('data', packet => {
     
     // Sjekker om man tidligere har mottatt en melding med samme msgid, sysid og compid
     // Hvis ikke, skrives det ut en melding til konsollen
+    // OBS: Datastore støtter ikke dette, og vil kun lagre siste versjon av hver meldingstype
+
     const longKey = `${packet.header.msgid}-${packet.header.sysid}-${packet.header.compid}`;
     if (!newMessageList.hasOwnProperty(longKey)) {
         process.stdout.clearLine();
@@ -170,17 +149,46 @@ port.on('data', packet => {
         handlePhotoCapture(message);
     }
 
-    // if(key==203){
-    //     console.log("Jul i svingen");
-    // }
+    //Håndterer mottak av generator status
+    // if(key == 373){
 
-    // if(key == 76){
-    //     console.log(message);
     // }
 
     //prog() printer stjerner for å vise at prosessen fortsatt går. Ny stjerne for ca hver 5. melding 
+
+    //Sjekker om noen web socket clienter abonnerer på aktuell melding
+    
+
+    const hasSubscribers = clients.some(client =>
+        client.readyState === WebSocket.OPEN &&
+        client.subscriptions.has(String(key))
+    );
+    
+
+    
+    if (hasSubscribers) {
+        const payload = JSON.stringify({
+            msgid: key,
+            sysid: packet.header.sysid,
+            compid: packet.header.compid,
+            message: replaceBigIntWithString(message)
+        });
+    
+        // Now send to the subscribed clients
+        clients.forEach(client => {
+            if (
+                client.readyState === WebSocket.OPEN &&
+                client.subscriptions.has(String(key))
+            ) {
+                client.send(payload);
+            }
+        });
+    }
+
     prog();
 })
+
+
 
 function getTargetSystemAndComponent(message) {
     if ('targetSystem' in message && 'targetComponent' in message) {
@@ -191,13 +199,6 @@ function getTargetSystemAndComponent(message) {
 
 function handlePhotoCapture(cameraFeedbackMessage) {
 
-    // Select additional messages from the datastore
-    // const selectedMessages = {
-    //     // Example: Add selected messages from datastore
-    //     // message33: datastore[33],
-    //     // message32: datastore[32],
-    //     // Add more messages as needed
-    // };
 
     // Get the current time of day
     const timestamp = new Date().toISOString();
@@ -230,7 +231,7 @@ function handlePhotoCapture(cameraFeedbackMessage) {
 }
 
 
-//Counter functionality so notice incoming data. 
+//Counter functionality to notice incoming data. 
 let iteration = 0;
 let count = 0;
 function prog() {
@@ -248,12 +249,17 @@ function prog() {
     iteration += 1;
 }
 
+
 // Start the server
 const portNo = 3000;
 
-app.listen(portNo, () => {
-    console.log(`Server is listening on port ${portNo}`);
+server.listen(portNo, () => {
+    console.log(`Server and WebSocket listening on port ${portNo}`);
 });
+
+// app.listen(portNo, () => {
+//     console.log(`Server is listening on port ${portNo}`);
+// });
 
 
 // Event handler for errors
@@ -268,11 +274,11 @@ udpSocket.on('listening', () => {
 });
 
 
-app.get('/api/cleardatabase', (req,res) => {
+// app.get('/api/cleardatabase', (req,res) => {
     
-    database.clearDatabase();
-    res.send("Database is cleared")
-});
+//     database.clearDatabase();
+//     res.send("Database is cleared")
+// });
 
 app.get('/api/datastore/:index', (req, res) => {
     const index = req.params.index; // Get the index from the request parameters
@@ -291,134 +297,139 @@ app.get('/api/datastore/:index', (req, res) => {
     const data = datastore[index];
 
     // Send the data as the response
-    res.json(data);
+
+    res.json(replaceBigIntWithString(data));
 });
+
+
+
+
 
 // Define an API endpoint to return a comma-separated list of PhotoCapture event records with selected fields
-app.get('/api/photocapturelist', (req, res) => {
-    // Fetch PhotoCapture event records from the database
-    db.find({ timestamp: { $exists: true } }).sort({ 'SystemTime.timeBootMs': 1 }).exec((err, records) => {
-        if (err) {
-            console.error('Error fetching PhotoCapture events:', err);
-            return res.status(500).json({ error: 'Internal server error' });
-        }
+// app.get('/api/photocapturelist', (req, res) => {
+//     // Fetch PhotoCapture event records from the database
+//     db.find({ timestamp: { $exists: true } }).sort({ 'SystemTime.timeBootMs': 1 }).exec((err, records) => {
+//         if (err) {
+//             console.error('Error fetching PhotoCapture events:', err);
+//             return res.status(500).json({ error: 'Internal server error' });
+//         }
 
-        // Define the fields you want to include in the list
-        const fields = ['SystemTime.timeBootMs', 'CameraFeedbackMessage.lat', 'CameraFeedbackMessage.lng', 'CameraFeedbackMessage.altMsl', 'CameraFeedbackMessage.altRel', 'GimbalOrientation.pitch', 'GimbalOrientation.roll', 'GimbalOrientation.yaw', 'GimbalOrientation.yawAbsolute']; // Adjust fields as needed
+//         // Define the fields you want to include in the list
+//         const fields = ['SystemTime.timeBootMs', 'CameraFeedbackMessage.lat', 'CameraFeedbackMessage.lng', 'CameraFeedbackMessage.altMsl', 'CameraFeedbackMessage.altRel', 'GimbalOrientation.pitch', 'GimbalOrientation.roll', 'GimbalOrientation.yaw', 'GimbalOrientation.yawAbsolute']; // Adjust fields as needed
 
-        // record.SystemTime.timeBootMs
-        // Format the field names as the first line of the CSV
-        const fieldNames = fields.join(',') + '\n';
+//         // record.SystemTime.timeBootMs
+//         // Format the field names as the first line of the CSV
+//         const fieldNames = fields.join(',') + '\n';
 
-        // Format the records into a comma-separated list with selected fields
-        const csvList = records.map(record => fields.map(field => {
-            const fieldNames = field.split('.');
-            let value = record;
-            for (const fieldName of fieldNames) {
-                if (value && value.hasOwnProperty(fieldName)) {
-                    value = value[fieldName];
-                } else {
-                    value = null;
-                    break;
-                }
-            }
-            return value;
-        }).join(',')).join('\n');
+//         // Format the records into a comma-separated list with selected fields
+//         const csvList = records.map(record => fields.map(field => {
+//             const fieldNames = field.split('.');
+//             let value = record;
+//             for (const fieldName of fieldNames) {
+//                 if (value && value.hasOwnProperty(fieldName)) {
+//                     value = value[fieldName];
+//                 } else {
+//                     value = null;
+//                     break;
+//                 }
+//             }
+//             return value;
+//         }).join(',')).join('\n');
 
-        // Check if the dl query parameter is present
-        const download = req.query.dl === 'true';
+//         // Check if the dl query parameter is present
+//         const download = req.query.dl === 'true';
 
-        // Set response headers based on the value of the download parameter
-        if (download) {
-            res.setHeader('Content-Type', 'text/csv');
-            res.setHeader('Content-Disposition', 'attachment; filename="photocapture_list.csv"');
-        } else {
-            res.setHeader('Content-Type', 'text/plain'); // Display as plain text if not downloading
-        }
+//         // Set response headers based on the value of the download parameter
+//         if (download) {
+//             res.setHeader('Content-Type', 'text/csv');
+//             res.setHeader('Content-Disposition', 'attachment; filename="photocapture_list.csv"');
+//         } else {
+//             res.setHeader('Content-Type', 'text/plain'); // Display as plain text if not downloading
+//         }
 
-        // Send the formatted field names followed by the CSV list as the response
-        res.send(fieldNames + csvList);
-    });
-});
+//         // Send the formatted field names followed by the CSV list as the response
+//         res.send(fieldNames + csvList);
+//     });
+// });
 
-app.get('/api/photocapturelistgeojson', (req, res) => {
-    // Fetch PhotoCapture event records from the database
-    db.find({ timestamp: { $exists: true } }, (err, records) => {
-        if (err) {
-            console.error('Error fetching PhotoCapture events:', err);
-            return res.status(500).json({ error: 'Internal server error' });
-        }
+// app.get('/api/photocapturelistgeojson', (req, res) => {
+//     // Fetch PhotoCapture event records from the database
+//     db.find({ timestamp: { $exists: true } }, (err, records) => {
+//         if (err) {
+//             console.error('Error fetching PhotoCapture events:', err);
+//             return res.status(500).json({ error: 'Internal server error' });
+//         }
 
-        // Define the GeoJSON feature collection
-        const featureCollection = {
-            type: 'FeatureCollection',
-            features: []
-        };
+//         // Define the GeoJSON feature collection
+//         const featureCollection = {
+//             type: 'FeatureCollection',
+//             features: []
+//         };
 
-        // Convert each record to a GeoJSON feature
-        records.forEach(record => {
-            // Parse latitude and longitude values as decimal degrees
-            const lat = parseFloat(record.CameraFeedbackMessage.lat)/10000000;
-            const lng = parseFloat(record.CameraFeedbackMessage.lng)/10000000;
-            // Your timestamp with nanoseconds
-            let unixTimeNanoseconds = 1715766853676767n;
+//         // Convert each record to a GeoJSON feature
+//         records.forEach(record => {
+//             // Parse latitude and longitude values as decimal degrees
+//             const lat = parseFloat(record.CameraFeedbackMessage.lat)/10000000;
+//             const lng = parseFloat(record.CameraFeedbackMessage.lng)/10000000;
+//             // Your timestamp with nanoseconds
+//             let unixTimeNanoseconds = 1715766853676767n;
 
-            // Convert nanoseconds to milliseconds (BigInt to BigInt)
-            let unixTimeMillisecondsBigInt = unixTimeNanoseconds / 1000000n;
+//             // Convert nanoseconds to milliseconds (BigInt to BigInt)
+//             let unixTimeMillisecondsBigInt = unixTimeNanoseconds / 1000000n;
 
-            // Convert BigInt milliseconds to Number
-            let unixTimeMilliseconds = Number(unixTimeMillisecondsBigInt);
+//             // Convert BigInt milliseconds to Number
+//             let unixTimeMilliseconds = Number(unixTimeMillisecondsBigInt);
 
-            // Create a Date object from the milliseconds
-            let date = new Date(unixTimeMilliseconds);
+//             // Create a Date object from the milliseconds
+//             let date = new Date(unixTimeMilliseconds);
 
-            // Print the date to the console in ISO 8601 format
-            console.log(date.toISOString());
+//             // Print the date to the console in ISO 8601 format
+//             console.log(date.toISOString());
 
-            // Define properties for the feature
-            const properties = {
-                lat: lat,
-                lng: lng,
-                altMsl: parseFloat(record.CameraFeedbackMessage.altMsl),
-                altRel: parseFloat(record.CameraFeedbackMessage.altRel),
-                pitch: parseFloat(record.GimbalOrientation.pitch),
-                roll: parseFloat(record.GimbalOrientation.roll),
-                yaw: parseFloat(record.GimbalOrientation.yaw),
-                yawAbsolute: parseFloat(record.GimbalOrientation.yawAbsolute),
-                systemTime: parseFloat(record.SystemTime.timeBootMs),
-                captureTime: record.Custom.dateTimeCaptureISO
-                // time: record.customFields.dateTimeCaptureISO
-            };
+//             // Define properties for the feature
+//             const properties = {
+//                 lat: lat,
+//                 lng: lng,
+//                 altMsl: parseFloat(record.CameraFeedbackMessage.altMsl),
+//                 altRel: parseFloat(record.CameraFeedbackMessage.altRel),
+//                 pitch: parseFloat(record.GimbalOrientation.pitch),
+//                 roll: parseFloat(record.GimbalOrientation.roll),
+//                 yaw: parseFloat(record.GimbalOrientation.yaw),
+//                 yawAbsolute: parseFloat(record.GimbalOrientation.yawAbsolute),
+//                 systemTime: parseFloat(record.SystemTime.timeBootMs),
+//                 captureTime: record.Custom.dateTimeCaptureISO
+//                 // time: record.customFields.dateTimeCaptureISO
+//             };
 
-            // Define geometry for the feature
-            const geometry = {
-                type: 'Point',
-                coordinates: [lng, lat]
-            };
+//             // Define geometry for the feature
+//             const geometry = {
+//                 type: 'Point',
+//                 coordinates: [lng, lat]
+//             };
 
-            // Create the GeoJSON feature
-            const feature = {
-                type: 'Feature',
-                properties: properties,
-                geometry: geometry
-            };
+//             // Create the GeoJSON feature
+//             const feature = {
+//                 type: 'Feature',
+//                 properties: properties,
+//                 geometry: geometry
+//             };
 
-            // Add the feature to the feature collection
-            featureCollection.features.push(feature);
-        });
+//             // Add the feature to the feature collection
+//             featureCollection.features.push(feature);
+//         });
 
-        // Check if the dl query parameter is present and set to true
-        const download = req.query.dl === 'true';
+//         // Check if the dl query parameter is present and set to true
+//         const download = req.query.dl === 'true';
 
-        // Set response headers based on the value of the download parameter
-        if (download) {
-            res.setHeader('Content-Type', 'application/json');
-            res.setHeader('Content-Disposition', 'attachment; filename="photocapture_list.geojson"');
-        } else {
-            res.setHeader('Content-Type', 'application/json');
-        }
+//         // Set response headers based on the value of the download parameter
+//         if (download) {
+//             res.setHeader('Content-Type', 'application/json');
+//             res.setHeader('Content-Disposition', 'attachment; filename="photocapture_list.geojson"');
+//         } else {
+//             res.setHeader('Content-Type', 'application/json');
+//         }
 
-        // Send the GeoJSON feature collection as the response
-        res.json(featureCollection);
-    });
-});
+//         // Send the GeoJSON feature collection as the response
+//         res.json(featureCollection);
+//     });
+// });
