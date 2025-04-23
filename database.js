@@ -1,48 +1,40 @@
-// Import NeDB
+// db.js
 const Datastore = require('nedb');
 const fs = require('fs');
 
-// Define the configuration for the database
-const dbConfig = {
-    filename: 'database.db', // Change the path as needed
-    autoload: true
-};
+const dbFile = 'database.db';
+let db = null;
 
-// Create and export a function to initialize the database
-module.exports = () => {
-    const db = new Datastore(dbConfig);
-
-    // Function to insert a photoCapture event into the database
-    function insertPhotoCaptureEvent(photoCaptureEvent) {
-        return new Promise((resolve, reject) => {
-            // Insert the photoCapture event into the database
-            db.insert(photoCaptureEvent, (err, newEvent) => {
-                if (err) {
-                    reject(err);
-                } else {
-                    // Resolve the promise with the inserted photoCapture event
-                    resolve(newEvent);
-                }
-            });
-        });
-    }
-
-    // Attach the insertPhotoCaptureEvent function to the database instance
-    db.insertPhotoCaptureEvent = insertPhotoCaptureEvent;
-
-    return db;
-};
-
-// Function to clear the database on startup
-module.exports.clearDatabase = () => {
-    // Check if the database file exists
-    if (fs.existsSync(dbConfig.filename)) {
-        // If the database file exists, delete it
-        fs.unlinkSync(dbConfig.filename);
+// Function to clear the database file
+function clearDatabase() {
+    if (fs.existsSync(dbFile)) {
+        fs.unlinkSync(dbFile);
         console.log('Database cleared.');
     } else {
         console.log('No existing database found.');
     }
+}
+
+// Function to initialize the database ONCE
+function initializeDatabase() {
+    if (db) return db; // already initialized
+
+    db = new Datastore({ filename: dbFile, autoload: true });
+
+    db.insertPhotoCaptureEvent = function (photoCaptureEvent) {
+        return new Promise((resolve, reject) => {
+            db.insert(photoCaptureEvent, (err, newDoc) => {
+                if (err) reject(err);
+                else resolve(newDoc);
+            });
+        });
+    };
+
+    return db;
+}
+
+// Export just the functions
+module.exports = {
+    clearDatabase,
+    initializeDatabase
 };
-
-

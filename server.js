@@ -27,8 +27,13 @@ const {
     replaceBigIntWithString
 } = require('./utils')
 
-const db = database();
 database.clearDatabase();
+
+const db = database.initializeDatabase();
+
+// database.clearDatabase();
+
+
 console.log(`My IP is ${getLocalIP()}`);
 
 const server = http.createServer(app);

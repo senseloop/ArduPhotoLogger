@@ -3,7 +3,11 @@ const router = express.Router();
 const database = require('./database');
 const { convertTimestringToISO8601 } = require('./utils');
 
-const db = database();
+const { initializeDatabase } = require('./database');
+
+const db = initializeDatabase();
+
+// const db = database();
 
 router.get('/'), (req, res) => {
     res.send("Assa du er digg azz");
