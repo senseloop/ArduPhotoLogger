@@ -1,6 +1,6 @@
 const dgram = require('dgram');
 const { Readable } = require('stream');
-const { MavLinkPacketParser, MavLinkPacketSplitter, MavLinkPacketRegistry, minimal, common, ardupilotmega } = require('node-mavlink');
+const { MavLinkPacketParser, MavLinkPacketSplitter, MavLinkPacketRegistry, minimal, common, ardupilotmega, uavionix } = require('node-mavlink');
 const express = require('express');
 const { Console } = require('console');
 const fs = require('fs');
@@ -103,12 +103,14 @@ const REGISTRY = {
     ...minimal.REGISTRY,
     ...common.REGISTRY,
     ...ardupilotmega.REGISTRY,
+    ...uavionix.REGISTRY
 }
 
 
 const getData = (packet) => {
     if(!REGISTRY.hasOwnProperty(packet.header.msgid)){
         console.log("Warning: Unknown message ID");
+        return null
     }
     //console.log(packet);
     
@@ -126,6 +128,7 @@ port.on('data', packet => {
     
     const key = packet.header.msgid;
     const message = getData(packet);
+    if(message==null) return
     const msgid = packet.header.msgid;
     // console.log(message);
     
