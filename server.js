@@ -107,6 +107,8 @@ const REGISTRY = {
 }
 
 
+
+
 const getData = (packet) => {
     if(!REGISTRY.hasOwnProperty(packet.header.msgid)){
         console.log("Warning: Unknown message ID");
@@ -139,14 +141,17 @@ port.on('data', packet => {
 
     const longKey = `${packet.header.msgid}-${packet.header.sysid}-${packet.header.compid}`;
     if (!newMessageList.hasOwnProperty(longKey)) {
-        process.stdout.clearLine();
-        process.stdout.cursorTo(0);
+        if(process.stdout.isTTY){
+	process.stdout.clearLine();
+        process.stdout.cursorTo(0);	
+	
         const currentTime = new Date().toLocaleTimeString('en-US', { hour12: false }); // Local time in HH:mm:ss format
         const target = getTargetSystemAndComponent(message)
         
         console.log(`[${currentTime}] First message: ${message.msg_name} (${msgid}), from: ${packet.header.sysid}-${packet.header.compid} ${target ? `to: ${target.targetSystem}-${target.targetComponent}` : ''}`);
 
         newMessageList[longKey] = true;
+	}
     }
 
     //Overskriver data i datastore med ny melding
@@ -192,8 +197,10 @@ port.on('data', packet => {
             }
         });
     }
-
-    prog();
+    
+    if(process.stdout.isTTY){
+       prog();
+    }	
 })
 
 
@@ -250,6 +257,7 @@ function prog() {
     }
     iteration += 1;
     if (count > 30) {
+	
         process.stdout.clearLine();
         process.stdout.cursorTo(0);
         count = 0;
@@ -310,7 +318,45 @@ app.get('/api/datastore/:index', (req, res) => {
 });
 
 
+function sendUavionixAdsbOutCfg({
+    udpSocket,
+    targetIP = '127.0.0.1',
+    targetPort = 14550,
+    systemId = 1,
+    componentId = 1,
+    ICAO = 123456789,
+    callsign = 'TEST1234',
+    emitterType = 1, // e.g., MAV_ADSB_EMITTER_TYPE_LIGHT
+    aircraftSize = 1,
+    gpsOffsetLat = 0,
+    gpsOffsetLon = 0,
+    stallSpeed = 20,
+    capabilities = 0
+}) {
+    const message = new uavionix.UavionixAdsbOutCfg(
+        ICAO,
+        callsign,
+        emitterType,
+        aircraftSize,
+        gpsOffsetLat,
+        gpsOffsetLon,
+        stallSpeed,
+        capabilities
+    );
 
+    // Wrap the message in a MavLink frame
+    const packet = message.pack(systemId, componentId);
+
+    // Serialize to Buffer and send via UDP
+    const buffer = Buffer.from(packet.buffer);
+    udpSocket.send(buffer, 0, buffer.length, targetPort, targetIP, (err) => {
+        if (err) {
+            console.error('Failed to send UAVIONIX_ADSB_OUT_CFG:', err);
+        } else {
+            console.log(`UAVIONIX_ADSB_OUT_CFG message sent to ${targetIP}:${targetPort}`);
+        }
+    });
+}
 
 
 // Define an API endpoint to return a comma-separated list of PhotoCapture event records with selected fields
