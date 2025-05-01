@@ -267,7 +267,8 @@ function prog() {
 
 
 // Start the server
-const portNo = 3000;
+// const portNo = 3000;
+const portNo = process.env.PORT || 3000; // Fallback to 3000 if not set
 
 server.listen(portNo, () => {
     console.log(`Server and WebSocket listening on port ${portNo}`);
@@ -317,6 +318,13 @@ app.get('/api/datastore/:index', (req, res) => {
     res.json(replaceBigIntWithString(data));
 });
 
+app.get('/api/datastore', (req, res) => {
+    res.json(replaceBigIntWithString(datastore));
+});
+
+app.get('/api/datastore/all', (req, res) => {
+    res.json(replaceBigIntWithString(datastore))
+});
 
 function sendUavionixAdsbOutCfg({
     udpSocket,

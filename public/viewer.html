@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Datastore Viewer</title>
+  <script src="https://cdn.jsdelivr.net/npm/json-viewer-js@latest/dist/json-viewer.min.js"></script>
+</head>
+<body>
+  <h2>Datastore Collapsible JSON</h2>
+  <div id="json"></div>
+
+  <script>
+    fetch('/api/datastore/list')
+      .then(res => res.json())
+      .then(json => {
+        const viewer = new JSONViewer();
+        document.getElementById("json").appendChild(viewer.getContainer());
+        viewer.showJSON(json, 1); // Collapse level
+      })
+      .catch(err => {
+        document.getElementById("json").innerText = 'Failed to load data: ' + err;
+      });
+  </script>
+</body>
+</html>
