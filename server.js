@@ -1,6 +1,6 @@
 const dgram = require('dgram');
 const { Readable } = require('stream');
-const { MavLinkPacketParser, MavLinkPacketSplitter, MavLinkPacketRegistry, minimal, common, ardupilotmega, uavionix } = require('node-mavlink');
+const { MavLinkPacketParser, MavLinkPacketSplitter, MavLinkPacketRegistry, minimal, common, ardupilotmega, uavionix, send } = require('node-mavlink');
 const express = require('express');
 const { Console } = require('console');
 const fs = require('fs');
@@ -16,6 +16,8 @@ const cors = require('cors');
 const database = require('./database');
 
 const app = express();
+
+const timeOfTakeOff = null;
 
 app.use('/api', router);
 app.use(express.json());
@@ -74,6 +76,7 @@ wss.on('connection', (ws) => {
         console.log('Client disconnected');
     });
 });
+
 
 
 // Custom Readable stream that listens for messages from UDP socket
@@ -161,6 +164,8 @@ port.on('data', packet => {
     if(key == 180){
         handlePhotoCapture(message);
     }
+
+
 
     //Håndterer mottak av generator status
     // if(key == 373){
