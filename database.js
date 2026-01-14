@@ -1,5 +1,5 @@
 // db.js
-const Datastore = require('nedb');
+const Datastore = require('@seald-io/nedb');
 const fs = require('fs');
 
 const dbFile = 'database.db';

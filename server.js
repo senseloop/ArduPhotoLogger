@@ -29,11 +29,9 @@ const {
     replaceBigIntWithString
 } = require('./utils')
 
-database.clearDatabase();
+// database.clearDatabase();
 
 const db = database.initializeDatabase();
-
-// database.clearDatabase();
 
 
 console.log(`My IP is ${getLocalIP()}`);
@@ -166,14 +164,6 @@ port.on('data', packet => {
     }
 
 
-
-    //Håndterer mottak av generator status
-    // if(key == 373){
-
-    // }
-
-    //prog() printer stjerner for å vise at prosessen fortsatt går. Ny stjerne for ca hver 5. melding 
-
     //Sjekker om noen web socket clienter abonnerer på aktuell melding
     
 
@@ -302,34 +292,7 @@ udpSocket.on('listening', () => {
 //     res.send("Database is cleared")
 // });
 
-app.get('/api/datastore/:index', (req, res) => {
-    const index = req.params.index; // Get the index from the request parameters
 
-    // Validate the index is a number
-    if (isNaN(index)) {
-        return res.status(400).json({ error: 'Index must be a number' });
-    }
-
-    // Check if the specified index exists in the datastore
-    if (!datastore.hasOwnProperty(index)) {
-        return res.status(404).json({ error: `No data found at index ${index}` });
-    }
-
-    // Retrieve the data at the specified index
-    const data = datastore[index];
-
-    // Send the data as the response
-
-    res.json(replaceBigIntWithString(data));
-});
-
-app.get('/api/datastore', (req, res) => {
-    res.json(replaceBigIntWithString(datastore));
-});
-
-app.get('/api/datastore/all', (req, res) => {
-    res.json(replaceBigIntWithString(datastore))
-});
 
 function sendUavionixAdsbOutCfg({
     udpSocket,
@@ -372,131 +335,3 @@ function sendUavionixAdsbOutCfg({
 }
 
 
-// Define an API endpoint to return a comma-separated list of PhotoCapture event records with selected fields
-// app.get('/api/photocapturelist', (req, res) => {
-//     // Fetch PhotoCapture event records from the database
-//     db.find({ timestamp: { $exists: true } }).sort({ 'SystemTime.timeBootMs': 1 }).exec((err, records) => {
-//         if (err) {
-//             console.error('Error fetching PhotoCapture events:', err);
-//             return res.status(500).json({ error: 'Internal server error' });
-//         }
-
-//         // Define the fields you want to include in the list
-//         const fields = ['SystemTime.timeBootMs', 'CameraFeedbackMessage.lat', 'CameraFeedbackMessage.lng', 'CameraFeedbackMessage.altMsl', 'CameraFeedbackMessage.altRel', 'GimbalOrientation.pitch', 'GimbalOrientation.roll', 'GimbalOrientation.yaw', 'GimbalOrientation.yawAbsolute']; // Adjust fields as needed
-
-//         // record.SystemTime.timeBootMs
-//         // Format the field names as the first line of the CSV
-//         const fieldNames = fields.join(',') + '\n';
-
-//         // Format the records into a comma-separated list with selected fields
-//         const csvList = records.map(record => fields.map(field => {
-//             const fieldNames = field.split('.');
-//             let value = record;
-//             for (const fieldName of fieldNames) {
-//                 if (value && value.hasOwnProperty(fieldName)) {
-//                     value = value[fieldName];
-//                 } else {
-//                     value = null;
-//                     break;
-//                 }
-//             }
-//             return value;
-//         }).join(',')).join('\n');
-
-//         // Check if the dl query parameter is present
-//         const download = req.query.dl === 'true';
-
-//         // Set response headers based on the value of the download parameter
-//         if (download) {
-//             res.setHeader('Content-Type', 'text/csv');
-//             res.setHeader('Content-Disposition', 'attachment; filename="photocapture_list.csv"');
-//         } else {
-//             res.setHeader('Content-Type', 'text/plain'); // Display as plain text if not downloading
-//         }
-
-//         // Send the formatted field names followed by the CSV list as the response
-//         res.send(fieldNames + csvList);
-//     });
-// });
-
-// app.get('/api/photocapturelistgeojson', (req, res) => {
-//     // Fetch PhotoCapture event records from the database
-//     db.find({ timestamp: { $exists: true } }, (err, records) => {
-//         if (err) {
-//             console.error('Error fetching PhotoCapture events:', err);
-//             return res.status(500).json({ error: 'Internal server error' });
-//         }
-
-//         // Define the GeoJSON feature collection
-//         const featureCollection = {
-//             type: 'FeatureCollection',
-//             features: []
-//         };
-
-//         // Convert each record to a GeoJSON feature
-//         records.forEach(record => {
-//             // Parse latitude and longitude values as decimal degrees
-//             const lat = parseFloat(record.CameraFeedbackMessage.lat)/10000000;
-//             const lng = parseFloat(record.CameraFeedbackMessage.lng)/10000000;
-//             // Your timestamp with nanoseconds
-//             let unixTimeNanoseconds = 1715766853676767n;
-
-//             // Convert nanoseconds to milliseconds (BigInt to BigInt)
-//             let unixTimeMillisecondsBigInt = unixTimeNanoseconds / 1000000n;
-
-//             // Convert BigInt milliseconds to Number
-//             let unixTimeMilliseconds = Number(unixTimeMillisecondsBigInt);
-
-//             // Create a Date object from the milliseconds
-//             let date = new Date(unixTimeMilliseconds);
-
-//             // Print the date to the console in ISO 8601 format
-//             console.log(date.toISOString());
-
-//             // Define properties for the feature
-//             const properties = {
-//                 lat: lat,
-//                 lng: lng,
-//                 altMsl: parseFloat(record.CameraFeedbackMessage.altMsl),
-//                 altRel: parseFloat(record.CameraFeedbackMessage.altRel),
-//                 pitch: parseFloat(record.GimbalOrientation.pitch),
-//                 roll: parseFloat(record.GimbalOrientation.roll),
-//                 yaw: parseFloat(record.GimbalOrientation.yaw),
-//                 yawAbsolute: parseFloat(record.GimbalOrientation.yawAbsolute),
-//                 systemTime: parseFloat(record.SystemTime.timeBootMs),
-//                 captureTime: record.Custom.dateTimeCaptureISO
-//                 // time: record.customFields.dateTimeCaptureISO
-//             };
-
-//             // Define geometry for the feature
-//             const geometry = {
-//                 type: 'Point',
-//                 coordinates: [lng, lat]
-//             };
-
-//             // Create the GeoJSON feature
-//             const feature = {
-//                 type: 'Feature',
-//                 properties: properties,
-//                 geometry: geometry
-//             };
-
-//             // Add the feature to the feature collection
-//             featureCollection.features.push(feature);
-//         });
-
-//         // Check if the dl query parameter is present and set to true
-//         const download = req.query.dl === 'true';
-
-//         // Set response headers based on the value of the download parameter
-//         if (download) {
-//             res.setHeader('Content-Type', 'application/json');
-//             res.setHeader('Content-Disposition', 'attachment; filename="photocapture_list.geojson"');
-//         } else {
-//             res.setHeader('Content-Type', 'application/json');
-//         }
-
-//         // Send the GeoJSON feature collection as the response
-//         res.json(featureCollection);
-//     });
-// });
