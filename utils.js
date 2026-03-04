@@ -1,3 +1,4 @@
+const { error } = require('console');
 const os = require('os');
 
 module.exports = {
@@ -42,6 +43,8 @@ function convertTimestringToISO8601(input) {
 }
 
 function replaceBigIntWithString(obj) {
+    console.log(obj.toString());
+    
     if (typeof obj === 'bigint') {
         return obj.toString(); // or use Number(obj) if safe
     } else if (Array.isArray(obj)) {

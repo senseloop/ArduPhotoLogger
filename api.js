@@ -1,7 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const database = require('./database');
-const { convertTimestringToISO8601 } = require('./utils');
+const { convertTimestringToISO8601, replaceBigIntWithString } = require('./utils');
+
 
 const { initializeDatabase } = require('./database');
 
@@ -9,9 +10,27 @@ const db = initializeDatabase();
 
 // const db = database();
 
-router.get('/'), (req, res) => {
+// Get datastore reference from server.js (will be set when server.js loads)
+let datastore = {};
+setTimeout(() => {
+    const serverModule = require('./server');
+    datastore = serverModule.datastore;
+}, 100);
+
+router.get('/', (req, res) => {
     res.send("Assa du er digg azz");
-}
+});
+
+router.get('/config', (req, res) => {
+    const config = require('./config');
+    res.json(config.get());
+});
+
+router.post('/config/reload', (req, res) => {
+    const config = require('./config');
+    const reloadedConfig = config.reload();
+    res.json({ message: 'Configuration reloaded', config: reloadedConfig });
+});
 
 router.get('/cleardatabase', (req, res) => {
     database.clearDatabase();
@@ -172,7 +191,7 @@ router.get('/api/datastore/:index', (req, res) => {
     res.json(replaceBigIntWithString(data));
 });
 
-router.get('/api/datastore', (req, res) => {
+router.get('/datastore', (req, res) => {
     res.json(replaceBigIntWithString(datastore));
 });
 

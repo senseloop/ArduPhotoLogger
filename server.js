@@ -9,15 +9,19 @@ const fs = require('fs');
 const WebSocket = require('ws');
 const http = require('http');
 
-const { router, init } = require('./api');
-
 const cors = require('cors');
 
+const config = require('./config');
 const database = require('./database');
 
 const app = express();
 
 const timeOfTakeOff = null;
+
+let datastore = {};
+let newMessageList = {};
+
+const { router, init } = require('./api');
 
 app.use('/api', router);
 app.use(express.json());
@@ -33,49 +37,53 @@ const {
 
 const db = database.initializeDatabase();
 
+console.log('=== ArduPhotoLogger Configuration ===');
+console.log('Server Port:', config.get('server', 'port'));
+console.log('MAVLink Port:', config.get('mavlink', 'port'));
+console.log('WebSocket Enabled:', config.get('server', 'websocket_enabled'));
+console.log('Photo Capture Enabled:', config.get('features', 'photo_capture'));
+console.log('Database Logging Enabled:', config.get('features', 'database_logging'));
+console.log('=====================================\n');
 
 console.log(`My IP is ${getLocalIP()}`);
 
 const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
+const wss = config.get('server', 'websocket_enabled') ? new WebSocket.Server({ server }) : null;
 //Web socket clients
 let clients = [];
-
-let datastore = {};
-let newMessageList = {};
 
 // Create a UDP socket
 const udpSocket = dgram.createSocket('udp4');
 
 // Listen for messages assigned port
-udpSocket.bind(14559, '0.0.0.0');
+udpSocket.bind(config.get('mavlink', 'port'), config.get('mavlink', 'host'));
 
 //Web sockets stuff..
-wss.on('connection', (ws) => {
-    ws.subscriptions = new Set();
+if (wss) {
+    wss.on('connection', (ws) => {
+        ws.subscriptions = new Set();
 
-    clients.push(ws);
-    console.log('Client connected');
+        clients.push(ws);
+        console.log('Client connected');
 
-    ws.on('message', (message) => {
-        try {
-            const data = JSON.parse(message);
-            if (data.subscribe && Array.isArray(data.subscribe)) {
-                ws.subscriptions = new Set(data.subscribe.map(String));
-                console.log(`Client subscriptions updated: ${[...ws.subscriptions].join(', ')}`);
+        ws.on('message', (message) => {
+            try {
+                const data = JSON.parse(message);
+                if (data.subscribe && Array.isArray(data.subscribe)) {
+                    ws.subscriptions = new Set(data.subscribe.map(String));
+                    console.log(`Client subscriptions updated: ${[...ws.subscriptions].join(', ')}`);
+                }
+            } catch (e) {
+                console.error('Invalid message from client:', message);
             }
-        } catch (e) {
-            console.error('Invalid message from client:', message);
-        }
+        });
+
+        ws.on('close', () => {
+            clients = clients.filter(client => client !== ws);
+            console.log('Client disconnected');
+        });
     });
-
-    ws.on('close', () => {
-        clients = clients.filter(client => client !== ws);
-        console.log('Client disconnected');
-    });
-});
-
-
+}
 
 // Custom Readable stream that listens for messages from UDP socket
 class UDPReadable extends Readable {
@@ -159,7 +167,7 @@ port.on('data', packet => {
     datastore[key] = message;
 
     //Håndterer mottak av nyt PhotoCapture event
-    if(key == 180){
+    if(key == 180 && config.get('features', 'photo_capture')){
         handlePhotoCapture(message);
     }
 
@@ -262,12 +270,12 @@ function prog() {
 
 
 // Start the server
-// const portNo = 3000;
-const portNo = process.env.PORT || 3000; // Fallback to 3000 if not set
+const portNo = config.get('server', 'port');
 
 server.listen(portNo, () => {
     console.log(`Server and WebSocket listening on port ${portNo}`);
 });
+
 
 // app.listen(portNo, () => {
 //     console.log(`Server is listening on port ${portNo}`);
