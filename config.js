@@ -31,6 +31,20 @@ class Config {
                     photo_capture: parsed.features?.photo_capture !== 'false',
                     adsb_handler: parsed.features?.adsb_handler !== 'false',
                     database_logging: parsed.features?.database_logging !== 'false'
+                },
+                sync: {
+                    sync_enabled: parsed.sync?.sync_enabled === 'true' || parsed.sync?.sync_enabled === true,
+                    sync_interval_ms: parseInt(parsed.sync?.sync_interval_ms) || 30000,
+                    sync_batch_size: parseInt(parsed.sync?.sync_batch_size) || 50,
+                    sync_max_retries: parseInt(parsed.sync?.sync_max_retries) || 5,
+                    sync_cleanup_hours: parseInt(parsed.sync?.sync_cleanup_hours) || 24
+                },
+                postgres: {
+                    host: parsed.postgres?.host || process.env.POSTGRES_HOST || 'localhost',
+                    port: parseInt(parsed.postgres?.port) || parseInt(process.env.POSTGRES_PORT) || 5432,
+                    database: parsed.postgres?.database || process.env.POSTGRES_DB || 'arduphotologger',
+                    user: parsed.postgres?.user || process.env.POSTGRES_USER || 'postgres',
+                    password: process.env.POSTGRES_PASSWORD || parsed.postgres?.password
                 }
             };
 

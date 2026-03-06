@@ -12,13 +12,84 @@ const db = initializeDatabase();
 
 // Get datastore reference from server.js (will be set when server.js loads)
 let datastore = {};
-setTimeout(() => {
-    const serverModule = require('./server');
-    datastore = serverModule.datastore;
-}, 100);
+
+function setDatastore(ds) {
+    datastore = ds;
+}
 
 router.get('/', (req, res) => {
-    res.send("Assa du er digg azz");
+    res.json({
+        message: 'ArduPhotoLogger API',
+        version: '1.0.0',
+        endpoints: [
+            {
+                method: 'GET',
+                path: '/api',
+                description: 'API overview (this page)'
+            },
+            {
+                method: 'GET',
+                path: '/api/config',
+                description: 'Get current configuration'
+            },
+            {
+                method: 'POST',
+                path: '/api/config/reload',
+                description: 'Reload configuration from config.conf'
+            },
+            {
+                method: 'GET',
+                path: '/api/photocaptures',
+                description: 'Get all photo captures as JSON (sorted newest first)'
+            },
+            {
+                method: 'GET',
+                path: '/api/photocapturelist',
+                description: 'Get photo captures as CSV list'
+            },
+            {
+                method: 'GET',
+                path: '/api/photocapturelistgeojson',
+                description: 'Get photo captures as GeoJSON'
+            },
+            {
+                method: 'GET',
+                path: '/api/datastore',
+                description: 'Get datastore statistics'
+            },
+            {
+                method: 'GET',
+                path: '/api/datastore/:index',
+                description: 'Get specific datastore entry by index'
+            },
+            {
+                method: 'GET',
+                path: '/api/datastore/all',
+                description: 'Get all datastore entries'
+            },
+            {
+                method: 'GET',
+                path: '/api/sync/status',
+                description: 'Get PostgreSQL sync status and statistics'
+            },
+            {
+                method: 'POST',
+                path: '/api/sync/force',
+                description: 'Force an immediate sync to PostgreSQL'
+            },
+            {
+                method: 'GET',
+                path: '/api/sync/pending',
+                description: 'Get count of pending unsynced records'
+            },
+            {
+                method: 'POST',
+                path: '/api/cleardatabase',
+                description: 'Clear all database records (requires confirmation)',
+                body: { confirm: 'DELETE_ALL_DATA' }
+            }
+        ]
+    });
 });
 
 router.get('/config', (req, res) => {
@@ -32,10 +103,53 @@ router.post('/config/reload', (req, res) => {
     res.json({ message: 'Configuration reloaded', config: reloadedConfig });
 });
 
-router.get('/cleardatabase', (req, res) => {
+// Dangerous operation - requires POST with confirmation token
+router.post('/cleardatabase', (req, res) => {
+    const { confirm } = req.body;
+    
+    if (confirm !== 'DELETE_ALL_DATA') {
+        return res.status(400).json({ 
+            error: 'Confirmation required',
+            message: 'Send { "confirm": "DELETE_ALL_DATA" } in request body to proceed'
+        });
+    }
+    
     database.clearDatabase();
-    res.send('Database is cleared');
+    res.json({ 
+        success: true,
+        message: 'Database cleared',
+        timestamp: new Date().toISOString()
+    });
 });
+
+// Get all photo captures as JSON (sorted newest first)
+router.get('/photocaptures', (req, res) => {
+    db.find({ timestamp: { $exists: true } })
+        .sort({ timestamp: -1 })
+        .exec((err, records) => {
+            if (err) return res.status(500).json({ error: 'Internal server error' });
+            
+            const formattedRecords = records.map(record => ({
+                id: record._id,
+                timestamp: record.timestamp,
+                captureTime: record.Custom?.dateTimeCaptureISO,
+                lat: record.CameraFeedbackMessage?.lat / 1e7,
+                lng: record.CameraFeedbackMessage?.lng / 1e7,
+                altMsl: record.CameraFeedbackMessage?.altMsl,
+                altRel: record.CameraFeedbackMessage?.altRel,
+                pitch: record.GimbalOrientation?.pitch,
+                roll: record.GimbalOrientation?.roll,
+                yaw: record.GimbalOrientation?.yaw,
+                yawAbsolute: record.GimbalOrientation?.yawAbsolute,
+                hostname: record.hostname,
+                synced: record.synced,
+                syncAttempts: record.syncAttempts
+            }));
+            
+            res.json(formattedRecords);
+        });
+});
+
 
 
 router.get('/photocapturelist', (req, res) => {
@@ -199,4 +313,45 @@ router.get('/api/datastore/all', (req, res) => {
     res.json(replaceBigIntWithString(datastore))
 });
 
-module.exports.router = router;
+// Sync status endpoint
+router.get('/sync/status', (req, res) => {
+    const syncWorker = req.app.get('syncWorker');
+    if (!syncWorker) {
+        return res.status(503).json({ error: 'Sync worker not initialized' });
+    }
+    res.json(syncWorker.getStats());
+});
+
+// Force sync endpoint
+router.post('/sync/force', async (req, res) => {
+    const syncWorker = req.app.get('syncWorker');
+    if (!syncWorker) {
+        return res.status(503).json({ error: 'Sync worker not initialized' });
+    }
+    try {
+        await syncWorker.forceSyncNow();
+        res.json({ message: 'Sync triggered successfully' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Get unsynced count
+router.get('/sync/pending', async (req, res) => {
+    try {
+        const unsynced = await db.getUnsyncedEvents(1000);
+        res.json({ 
+            count: unsynced.length,
+            events: unsynced.map(e => ({
+                id: e._id,
+                timestamp: e.timestamp,
+                attempts: e.syncAttempts || 0,
+                lastAttempt: e.lastSyncAttempt
+            }))
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+module.exports = { router, setDatastore };

@@ -13,6 +13,7 @@ const cors = require('cors');
 
 const config = require('./config');
 const database = require('./database');
+const SyncWorker = require('./sync-worker');
 
 const app = express();
 
@@ -20,16 +21,21 @@ const timeOfTakeOff = null;
 
 let datastore = {};
 let newMessageList = {};
+let syncWorker = null;
 
-const { router, init } = require('./api');
+const { router, setDatastore } = require('./api');
 
-app.use('/api', router);
+// Pass datastore reference to API
+setDatastore(datastore);
+
 app.use(express.json());
 app.use(cors());
+app.use('/api', router);
 
 const {
     convertTimestringToISO8601,
     getLocalIP,
+    getHostname,
     replaceBigIntWithString
 } = require('./utils')
 
@@ -37,12 +43,25 @@ const {
 
 const db = database.initializeDatabase();
 
+// Initialize sync worker
+syncWorker = new SyncWorker(db, {
+    syncIntervalMs: config.get('sync', 'sync_interval_ms') || 30000,
+    batchSize: config.get('sync', 'sync_batch_size') || 50,
+    maxRetries: config.get('sync', 'sync_max_retries') || 5,
+    cleanupOlderThanHours: config.get('sync', 'sync_cleanup_hours') || 24,
+    enabled: config.get('sync', 'sync_enabled') !== 'false' && config.get('sync', 'sync_enabled') !== false
+});
+
+// Make syncWorker available to routes
+app.set('syncWorker', syncWorker);
+
 console.log('=== ArduPhotoLogger Configuration ===');
 console.log('Server Port:', config.get('server', 'port'));
 console.log('MAVLink Port:', config.get('mavlink', 'port'));
 console.log('WebSocket Enabled:', config.get('server', 'websocket_enabled'));
 console.log('Photo Capture Enabled:', config.get('features', 'photo_capture'));
 console.log('Database Logging Enabled:', config.get('features', 'database_logging'));
+console.log('PostgreSQL Sync Enabled:', config.get('sync', 'sync_enabled'));
 console.log('=====================================\n');
 
 console.log(`My IP is ${getLocalIP()}`);
@@ -64,14 +83,14 @@ if (wss) {
         ws.subscriptions = new Set();
 
         clients.push(ws);
-        console.log('Client connected');
+        // console.log('Client connected');
 
         ws.on('message', (message) => {
             try {
                 const data = JSON.parse(message);
                 if (data.subscribe && Array.isArray(data.subscribe)) {
                     ws.subscriptions = new Set(data.subscribe.map(String));
-                    console.log(`Client subscriptions updated: ${[...ws.subscriptions].join(', ')}`);
+                    // console.log(`Client subscriptions updated: ${[...ws.subscriptions].join(', ')}`);
                 }
             } catch (e) {
                 console.error('Invalid message from client:', message);
@@ -80,7 +99,7 @@ if (wss) {
 
         ws.on('close', () => {
             clients = clients.filter(client => client !== ws);
-            console.log('Client disconnected');
+            // console.log('Client disconnected');
         });
     });
 }
@@ -154,10 +173,9 @@ port.on('data', packet => {
 	process.stdout.clearLine();
         process.stdout.cursorTo(0);	
 	
-        const currentTime = new Date().toLocaleTimeString('en-US', { hour12: false }); // Local time in HH:mm:ss format
-        const target = getTargetSystemAndComponent(message)
-        
-        console.log(`[${currentTime}] First message: ${message.msg_name} (${msgid}), from: ${packet.header.sysid}-${packet.header.compid} ${target ? `to: ${target.targetSystem}-${target.targetComponent}` : ''}`);
+        // const currentTime = new Date().toLocaleTimeString('en-US', { hour12: false });
+        // const target = getTargetSystemAndComponent(message)
+        // console.log(`[${currentTime}] First message: ${message.msg_name} (${msgid}), from: ${packet.header.sysid}-${packet.header.compid} ${target ? `to: ${target.targetSystem}-${target.targetComponent}` : ''}`);
 
         newMessageList[longKey] = true;
 	}
@@ -201,9 +219,10 @@ port.on('data', packet => {
         });
     }
     
-    if(process.stdout.isTTY){
-       prog();
-    }	
+    // Removed prog() call - no more asterisk spam
+    // if(process.stdout.isTTY){
+    //    prog();
+    // }	
 })
 
 
@@ -231,7 +250,8 @@ function handlePhotoCapture(cameraFeedbackMessage) {
         CameraFeedbackMessage : cameraFeedbackMessage,
         GimbalOrientation : datastore[265],
         SystemTime : datastore[42],
-        Custom : customFields  
+        Custom : customFields,
+        hostname : getHostname()
     };
 
     // Perform any additional processing or logging
@@ -241,7 +261,10 @@ function handlePhotoCapture(cameraFeedbackMessage) {
     // You can store or send this event as needed
     db.insertPhotoCaptureEvent(photoCaptureEvent)
     .then(() => {
-        console.log('PhotoCapture event inserted into the database.');
+        const lat = (cameraFeedbackMessage.lat / 1e7).toFixed(6);
+        const lng = (cameraFeedbackMessage.lng / 1e7).toFixed(6);
+        const alt = cameraFeedbackMessage.altRel?.toFixed(1) || 'N/A';
+        console.log(`📷 Photo captured at ${lat}, ${lng} | Alt: ${alt}m | ${customFields.dateTimeCaptureISO}`);
     })
     .catch(error => {
         console.error('Error inserting photoCapture event into the database:', error);
@@ -272,8 +295,15 @@ function prog() {
 // Start the server
 const portNo = config.get('server', 'port');
 
-server.listen(portNo, () => {
+server.listen(portNo, async () => {
     console.log(`Server and WebSocket listening on port ${portNo}`);
+    
+    // Start sync worker
+    try {
+        await syncWorker.start();
+    } catch (err) {
+        console.error('Failed to start sync worker:', err.message);
+    }
 });
 
 
@@ -292,6 +322,56 @@ udpSocket.on('listening', () => {
     const address = udpSocket.address();
     console.log(`UDP socket listening on ${address.address}:${address.port}`);
 });
+
+// Graceful shutdown handler
+process.on('SIGTERM', async () => {
+    console.log('SIGTERM received, shutting down gracefully...');
+    await shutdown();
+});
+
+process.on('SIGINT', async () => {
+    console.log('SIGINT received, shutting down gracefully...');
+    await shutdown();
+});
+
+async function shutdown() {
+    try {
+        // Stop sync worker
+        if (syncWorker) {
+            await syncWorker.stop();
+        }
+        
+        // Close WebSocket server
+        if (wss) {
+            wss.clients.forEach(client => {
+                client.close();
+            });
+            wss.close(() => {
+                console.log('WebSocket server closed');
+            });
+        }
+        
+        // Close UDP socket
+        udpSocket.close(() => {
+            console.log('UDP socket closed');
+        });
+        
+        // Close HTTP server
+        server.close(() => {
+            console.log('HTTP server closed');
+        });
+        
+        // Force exit after 5 seconds if graceful shutdown fails
+        setTimeout(() => {
+            console.log('Forcing shutdown...');
+            process.exit(0);
+        }, 5000);
+        
+    } catch (error) {
+        console.error('Error during shutdown:', error);
+        process.exit(1);
+    }
+}
 
 
 // app.get('/api/cleardatabase', (req,res) => {

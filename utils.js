@@ -2,12 +2,11 @@ const { error } = require('console');
 const os = require('os');
 
 module.exports = {
-      convertTimestringToISO8601,
+      convertTimestringToISO8601,
       getLocalIP,
+      getHostname,
       replaceBigIntWithString
     };
-    
-
 function getLocalIP() {
     const nets = os.networkInterfaces();
     for (const name of Object.keys(nets)) {
@@ -18,6 +17,10 @@ function getLocalIP() {
         }
     }
     return 'Unknown';
+}
+
+function getHostname() {
+    return os.hostname();
 }
 
 function convertTimestringToISO8601(input) {
@@ -43,13 +46,15 @@ function convertTimestringToISO8601(input) {
 }
 
 function replaceBigIntWithString(obj) {
-    console.log(obj.toString());
+    if (obj === null || obj === undefined) {
+        return obj;
+    }
     
     if (typeof obj === 'bigint') {
-        return obj.toString(); // or use Number(obj) if safe
+        return obj.toString();
     } else if (Array.isArray(obj)) {
         return obj.map(replaceBigIntWithString);
-    } else if (obj !== null && typeof obj === 'object') {
+    } else if (typeof obj === 'object') {
         const result = {};
         for (const [key, value] of Object.entries(obj)) {
             result[key] = replaceBigIntWithString(value);
