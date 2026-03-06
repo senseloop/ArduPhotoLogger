@@ -52,7 +52,6 @@ class SyncWorker {
                 console.error('PostgreSQL connection failed. Sync worker will retry on next interval.');
                 this.stats.lastSyncStatus = 'connection_failed';
             } else {
-                await postgres.createTableIfNotExists();
                 console.log('PostgreSQL connection established');
             }
         } catch (err) {

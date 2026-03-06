@@ -13,36 +13,65 @@ npm install pg
 
 ### 2. Configure PostgreSQL Server
 
-Create the database on your PostgreSQL server:
+Create the database and table on your PostgreSQL server:
 ```sql
-CREATE DATABASE arduphotologger;
+CREATE DATABASE photolog;
+
+CREATE TABLE photolog (
+    id SERIAL PRIMARY KEY,
+    timestamp TIMESTAMPTZ NOT NULL,
+    time_boot_ms BIGINT,
+    lat DOUBLE PRECISION,
+    lng DOUBLE PRECISION,
+    alt_msl REAL,
+    alt_rel REAL,
+    gimbal_pitch REAL,
+    gimbal_roll REAL,
+    gimbal_yaw REAL,
+    gimbal_yaw_absolute REAL,
+    capture_time_iso TIMESTAMPTZ,
+    camera_feedback_raw JSONB,
+    gimbal_orientation_raw JSONB,
+    system_time_raw JSONB,
+    local_db_id TEXT UNIQUE,
+    hostname TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_photolog_timestamp ON photolog(timestamp);
+CREATE INDEX idx_photolog_local_db_id ON photolog(local_db_id);
 ```
 
-The table will be created automatically on first sync.
+**Note:** The application will NOT create the table automatically. You must create the schema beforehand.
 
-### 3. Configure Environment
+### 3. Configure Connection
 
-Option A: Using environment variables (recommended for production):
-```bash
-export POSTGRES_HOST=your-postgres-server.com
-export POSTGRES_PORT=5432
-export POSTGRES_DB=arduphotologger
-export POSTGRES_USER=postgres
-export POSTGRES_PASSWORD=your_secure_password
-```
-
-Option B: Edit `config.conf`:
+Edit `config.conf`:
 ```ini
 [postgres]
-host=your-postgres-server.com
+host=10.50.0.31
 port=5432
-database=arduphotologger
-user=postgres
+database=photolog
+table=photolog
+user=droneuser
+password=your_secure_password
 ```
 
-**Note:** Never commit passwords to git. Use environment variables for POSTGRES_PASSWORD.
+**Configuration is now only read from config.conf** - environment variables are no longer used.
 
-### 4. Start the Server
+### 4. Enable Sync
+
+Edit `config.conf`:
+```ini
+[sync]
+sync_enabled=true
+sync_interval_ms=30000
+sync_batch_size=50
+sync_max_retries=5
+sync_cleanup_hours=24
+```
+
+### 5. Start the Server
 ```bash
 npm start
 ```
@@ -101,6 +130,14 @@ sync_interval_ms=30000         # Sync every 30 seconds
 sync_batch_size=50             # Sync 50 events per batch
 sync_max_retries=5             # Max retry attempts per event
 sync_cleanup_hours=24          # Delete synced records after 24 hours
+
+[postgres]
+host=localhost                 # PostgreSQL server hostname
+port=5432                      # PostgreSQL server port
+database=photolog              # Database name
+table=photolog                 # Table name
+user=postgres                  # Database user
+password=your_password         # Database password
 ```
 
 ## How It Works
@@ -120,9 +157,9 @@ sync_cleanup_hours=24          # Delete synced records after 24 hours
 
 ### Database Schema
 
-PostgreSQL table structure:
+PostgreSQL table structure (you must create this manually):
 ```sql
-CREATE TABLE photo_captures (
+CREATE TABLE photolog (
     id SERIAL PRIMARY KEY,
     timestamp TIMESTAMPTZ NOT NULL,
     time_boot_ms BIGINT,
@@ -162,10 +199,11 @@ curl http://localhost:3000/api/sync/status
 ## Troubleshooting
 
 ### Sync not working
-1. Check PostgreSQL credentials in config.conf or environment variables
+1. Check PostgreSQL credentials in config.conf
 2. Verify network connectivity: `telnet postgres-host 5432`
 3. Check sync status: `GET /api/sync/status`
 4. Review logs for connection errors
+5. Ensure the table exists in the database
 
 ### Events not syncing
 - Check `GET /api/sync/pending` to see stuck events
@@ -176,32 +214,36 @@ curl http://localhost:3000/api/sync/status
 - The `local_db_id` field prevents duplicates
 - PostgreSQL will silently skip duplicate inserts
 
-## Files Added/Modified
+### Table does not exist error
+- The application does NOT create tables automatically
+- You must create the schema manually using the SQL provided above
 
-**New Files:**
-- `postgres.js` - PostgreSQL connection and operations
-- `sync-worker.js` - Background sync worker
-- `.env.example` - Environment variable template
+## Files Modified
 
 **Modified Files:**
+- `postgres.js` - PostgreSQL connection and operations (removed table creation)
+- `sync-worker.js` - Background sync worker (removed table creation call)
+- `config.js` - Configuration loader (removed environment variable support)
 - `database.js` - Added sync tracking fields and methods
 - `server.js` - Integrated sync worker
 - `api.js` - Added sync status endpoints
-- `config.conf` - Added sync configuration
+- `config.conf` - Added sync configuration and postgres password
 - `package.json` - Added `pg` dependency
 
 ## Production Recommendations
 
-1. **Use environment variables** for all sensitive credentials
+1. **Configure credentials in config.conf** - all settings are now centralized
 2. **Monitor sync status** via the API endpoints
 3. **Set appropriate cleanup interval** based on storage capacity
 4. **Enable PostgreSQL SSL** for secure connections
 5. **Set up PostgreSQL backups** as it's now your primary data store
 6. **Consider connection pooling** for high-volume scenarios (already configured)
+7. **Create the database schema manually** before starting the application
 
 ## Security Notes
 
-- Never commit `.env` or passwords to version control
+- Keep config.conf secure and restrict file permissions
 - Use SSL/TLS for PostgreSQL connections in production
 - Restrict PostgreSQL access to known IPs
 - Use strong passwords for database authentication
+- Consider encrypting config.conf or storing it outside the repository

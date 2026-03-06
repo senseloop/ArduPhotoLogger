@@ -40,11 +40,12 @@ class Config {
                     sync_cleanup_hours: parseInt(parsed.sync?.sync_cleanup_hours) || 24
                 },
                 postgres: {
-                    host: parsed.postgres?.host || process.env.POSTGRES_HOST || 'localhost',
-                    port: parseInt(parsed.postgres?.port) || parseInt(process.env.POSTGRES_PORT) || 5432,
-                    database: parsed.postgres?.database || process.env.POSTGRES_DB || 'arduphotologger',
-                    user: parsed.postgres?.user || process.env.POSTGRES_USER || 'postgres',
-                    password: process.env.POSTGRES_PASSWORD || parsed.postgres?.password
+                    host: parsed.postgres?.host || 'localhost',
+                    port: parseInt(parsed.postgres?.port) || 5432,
+                    database: parsed.postgres?.database || 'photolog',
+                    table: parsed.postgres?.table || 'photolog',
+                    user: parsed.postgres?.user || 'postgres',
+                    password: parsed.postgres?.password || ''
                 }
             };
 

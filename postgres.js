@@ -1,5 +1,6 @@
 // PostgreSQL connection and operations module
 const { Pool } = require('pg');
+const config = require('./config');
 
 let pool = null;
 
@@ -7,12 +8,21 @@ let pool = null;
 function initializePostgres() {
     if (pool) return pool;
 
+    const postgresConfig = config.get('postgres');
+    
+    console.log('=== Initializing PostgreSQL Connection ===');
+    console.log(`Host: ${postgresConfig.host}`);
+    console.log(`Port: ${postgresConfig.port}`);
+    console.log(`Database: ${postgresConfig.database}`);
+    console.log(`User: ${postgresConfig.user}`);
+    console.log(`Table: ${postgresConfig.table}`);
+    
     pool = new Pool({
-        host: process.env.POSTGRES_HOST || 'localhost',
-        port: process.env.POSTGRES_PORT || 5432,
-        database: process.env.POSTGRES_DB || 'arduphotologger',
-        user: process.env.POSTGRES_USER || 'postgres',
-        password: process.env.POSTGRES_PASSWORD,
+        host: postgresConfig.host,
+        port: postgresConfig.port,
+        database: postgresConfig.database,
+        user: postgresConfig.user,
+        password: postgresConfig.password,
         // Connection pool settings
         max: 5, // Maximum number of clients in the pool
         idleTimeoutMillis: 30000,
@@ -20,7 +30,10 @@ function initializePostgres() {
     });
 
     pool.on('error', (err) => {
-        console.error('Unexpected PostgreSQL pool error:', err);
+        console.error('=== Unexpected PostgreSQL pool error ===');
+        console.error('Error message:', err.message);
+        console.error('Error code:', err.code);
+        console.error('Error stack:', err.stack);
     });
 
     console.log('PostgreSQL connection pool initialized');
@@ -29,61 +42,32 @@ function initializePostgres() {
 
 // Test connection to PostgreSQL
 async function testConnection() {
+    console.log('=== Testing PostgreSQL Connection ===');
     try {
         const client = await pool.connect();
-        await client.query('SELECT NOW()');
+        console.log('Successfully acquired client from pool');
+        const result = await client.query('SELECT NOW()');
+        console.log('Query executed successfully:', result.rows[0]);
         client.release();
+        console.log('Connection test PASSED');
         return true;
     } catch (err) {
-        console.error('PostgreSQL connection test failed:', err.message);
-        return false;
-    }
-}
-
-// Create the photo_captures table if it doesn't exist
-async function createTableIfNotExists() {
-    const createTableQuery = `
-        CREATE TABLE IF NOT EXISTS photo_captures (
-            id SERIAL PRIMARY KEY,
-            timestamp TIMESTAMPTZ NOT NULL,
-            time_boot_ms BIGINT,
-            lat DOUBLE PRECISION,
-            lng DOUBLE PRECISION,
-            alt_msl REAL,
-            alt_rel REAL,
-            gimbal_pitch REAL,
-            gimbal_roll REAL,
-            gimbal_yaw REAL,
-            gimbal_yaw_absolute REAL,
-            capture_time_iso TIMESTAMPTZ,
-            camera_feedback_raw JSONB,
-            gimbal_orientation_raw JSONB,
-            system_time_raw JSONB,
-            local_db_id TEXT UNIQUE,
-            hostname TEXT,
-            created_at TIMESTAMPTZ DEFAULT NOW()
-        );
-        
-        CREATE INDEX IF NOT EXISTS idx_photo_captures_timestamp ON photo_captures(timestamp);
-        CREATE INDEX IF NOT EXISTS idx_photo_captures_local_db_id ON photo_captures(local_db_id);
-    `;
-
-    try {
-        await pool.query(createTableQuery);
-        console.log('PostgreSQL table photo_captures ensured');
-        return true;
-    } catch (err) {
-        console.error('Failed to create PostgreSQL table:', err);
+        console.error('=== PostgreSQL Connection Test FAILED ===');
+        console.error('Error message:', err.message);
+        console.error('Error code:', err.code);
+        console.error('Error detail:', err.detail);
+        console.error('Error hint:', err.hint);
+        console.error('Error stack:', err.stack);
         return false;
     }
 }
 
 // Insert a photo capture event into PostgreSQL
 async function insertPhotoCaptureEvent(event, localDbId) {
+    const tableName = config.get('postgres', 'table');
     const query = `
-        INSERT INTO photo_captures (
+        INSERT INTO ${tableName} (
             timestamp,
-            time_boot_ms,
             lat,
             lng,
             alt_msl,
@@ -98,14 +82,13 @@ async function insertPhotoCaptureEvent(event, localDbId) {
             system_time_raw,
             local_db_id,
             hostname
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
         ON CONFLICT (local_db_id) DO NOTHING
         RETURNING id
     `;
 
     const values = [
         event.timestamp,
-        event.SystemTime?.timeBootMs,
         event.CameraFeedbackMessage?.lat,
         event.CameraFeedbackMessage?.lng,
         event.CameraFeedbackMessage?.altMsl,
@@ -122,41 +105,86 @@ async function insertPhotoCaptureEvent(event, localDbId) {
         event.hostname || null
     ];
 
+    console.log('=== Inserting Photo Capture Event ===');
+    console.log('Table:', tableName);
+    console.log('Local DB ID:', localDbId);
+    console.log('Values:', {
+        timestamp: values[0],
+        lat: values[1],
+        lng: values[2],
+        alt_msl: values[3],
+        alt_rel: values[4],
+        gimbal_pitch: values[5],
+        gimbal_roll: values[6],
+        gimbal_yaw: values[7],
+        gimbal_yaw_absolute: values[8],
+        capture_time_iso: values[9],
+        local_db_id: values[13],
+        hostname: values[14]
+    });
+
     try {
         const result = await pool.query(query, values);
-        return result.rowCount > 0 ? result.rows[0].id : null;
+        if (result.rowCount > 0) {
+            console.log(`✓ Successfully inserted event with ID: ${result.rows[0].id}`);
+            return result.rows[0].id;
+        } else {
+            console.log('⚠ Insert returned 0 rows (likely duplicate, ON CONFLICT triggered)');
+            return null;
+        }
     } catch (err) {
-        console.error('Failed to insert photo capture event:', err);
+        console.error('=== Failed to Insert Photo Capture Event ===');
+        console.error('Error message:', err.message);
+        console.error('Error code:', err.code);
+        console.error('Error detail:', err.detail);
+        console.error('Error hint:', err.hint);
+        console.error('Error constraint:', err.constraint);
+        console.error('Error column:', err.column);
+        console.error('Error table:', err.table);
+        console.error('Query:', query);
+        console.error('Values summary:', {
+            timestamp: values[0],
+            lat: values[1],
+            lng: values[2],
+            local_db_id: values[13],
+            hostname: values[14]
+        });
+        console.error('Full error stack:', err.stack);
         throw err;
     }
 }
 
 // Batch insert multiple photo capture events
 async function batchInsertPhotoCaptureEvents(events) {
-    if (!events || events.length === 0) return { success: 0, failed: 0 };
+    if (!events || events.length === 0) {
+        console.log('⚠ No events to batch insert');
+        return { success: 0, failed: 0 };
+    }
 
+    console.log(`=== Batch Inserting ${events.length} Photo Capture Events ===`);
     const client = await pool.connect();
+    const tableName = config.get('postgres', 'table');
     let success = 0;
     let failed = 0;
 
     try {
+        console.log('Starting transaction...');
         await client.query('BEGIN');
 
         for (const { event, localDbId } of events) {
             try {
                 const query = `
-                    INSERT INTO photo_captures (
-                        timestamp, time_boot_ms, lat, lng, alt_msl, alt_rel,
+                    INSERT INTO ${tableName} (
+                        timestamp, lat, lng, alt_msl, alt_rel,
                         gimbal_pitch, gimbal_roll, gimbal_yaw, gimbal_yaw_absolute,
                         capture_time_iso, camera_feedback_raw, gimbal_orientation_raw,
                         system_time_raw, local_db_id, hostname
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
                     ON CONFLICT (local_db_id) DO NOTHING
                 `;
 
                 const values = [
                     event.timestamp,
-                    event.SystemTime?.timeBootMs,
                     event.CameraFeedbackMessage?.lat,
                     event.CameraFeedbackMessage?.lng,
                     event.CameraFeedbackMessage?.altMsl,
@@ -173,21 +201,46 @@ async function batchInsertPhotoCaptureEvents(events) {
                     event.hostname || null
                 ];
 
-                await client.query(query, values);
+                console.log(`  Processing event ${localDbId}...`);
+                const result = await client.query(query, values);
+                if (result.rowCount > 0) {
+                    console.log(`  ✓ Event ${localDbId} inserted successfully`);
+                } else {
+                    console.log(`  ⚠ Event ${localDbId} skipped (duplicate)`);
+                }
                 success++;
             } catch (err) {
-                console.error(`Failed to insert event ${localDbId}:`, err.message);
+                console.error(`=== Failed to Insert Event ${localDbId} ===`);
+                console.error('Error message:', err.message);
+                console.error('Error code:', err.code);
+                console.error('Error detail:', err.detail);
+                console.error('Error hint:', err.hint);
+                console.error('Error constraint:', err.constraint);
+                console.error('Event data:', {
+                    timestamp: event.timestamp,
+                    lat: event.CameraFeedbackMessage?.lat,
+                    lng: event.CameraFeedbackMessage?.lng,
+                    localDbId: localDbId
+                });
                 failed++;
             }
         }
 
+        console.log('Committing transaction...');
         await client.query('COMMIT');
+        console.log(`✓ Batch insert completed: ${success} succeeded, ${failed} failed`);
     } catch (err) {
         await client.query('ROLLBACK');
-        console.error('Batch insert transaction failed:', err);
+        console.error('=== Batch Insert Transaction FAILED ===');
+        console.error('Error message:', err.message);
+        console.error('Error code:', err.code);
+        console.error('Error detail:', err.detail);
+        console.error('Error stack:', err.stack);
+        console.error(`Rolled back. ${success} succeeded before failure, ${failed} had failed`);
         throw err;
     } finally {
         client.release();
+        console.log('Database client released');
     }
 
     return { success, failed };
@@ -205,7 +258,6 @@ async function closePool() {
 module.exports = {
     initializePostgres,
     testConnection,
-    createTableIfNotExists,
     insertPhotoCaptureEvent,
     batchInsertPhotoCaptureEvents,
     closePool
