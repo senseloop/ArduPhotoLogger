@@ -96,6 +96,18 @@ class SyncWorker {
         console.log('Sync worker stopped');
     }
 
+    // Trigger immediate sync (non-blocking)
+    triggerImmediateSync() {
+        if (!this.isRunning || !this.config.enabled) {
+            return;
+        }
+        
+        // Don't await - let it run in background
+        this.syncBatch().catch(err => {
+            console.error('Immediate sync error:', err);
+        });
+    }
+
     // Sync a batch of unsynced events
     async syncBatch() {
         if (!this.isRunning) return;
@@ -113,51 +125,55 @@ class SyncWorker {
                 return;
             }
 
-            // Get unsynced events
-            const unsyncedEvents = await this.db.getUnsyncedEvents(this.config.batchSize);
+            // Sync all unsynced events in batches until none remain
+            let totalProcessed = 0;
+            let hasMore = true;
+            
+            while (hasMore && this.isRunning) {
+                // Get unsynced events
+                const unsyncedEvents = await this.db.getUnsyncedEvents(this.config.batchSize);
 
-            if (unsyncedEvents.length === 0) {
-                // No events to sync - perform cleanup if needed
-                if (Date.now() - this.lastCleanup > this.config.cleanupIntervalMs) {
-                    await this.cleanupOldRecords();
+                if (unsyncedEvents.length === 0) {
+                    hasMore = false;
+                    // No events to sync - perform cleanup if needed
+                    if (Date.now() - this.lastCleanup > this.config.cleanupIntervalMs) {
+                        await this.cleanupOldRecords();
+                    }
+                    break;
                 }
-                return;
-            }
 
-            // Filter out events that have exceeded max retries
-            const eventsToSync = unsyncedEvents.filter(event => {
-                const attempts = event.syncAttempts || 0;
-                return attempts < this.config.maxRetries;
-            });
+                console.log(`Syncing batch of ${unsyncedEvents.length} photo capture events to PostgreSQL...`);
 
-            if (eventsToSync.length === 0) {
-                console.log(`${unsyncedEvents.length} events have exceeded max retry attempts`);
-                return;
-            }
+                // Prepare batch data
+                const batchData = unsyncedEvents.map(event => ({
+                    event: event,
+                    localDbId: event._id
+                }));
 
-            console.log(`Syncing ${eventsToSync.length} photo capture events to PostgreSQL...`);
+                // Attempt batch insert
+                const result = await postgres.batchInsertPhotoCaptureEvents(batchData);
 
-            // Prepare batch data
-            const batchData = eventsToSync.map(event => ({
-                event: event,
-                localDbId: event._id
-            }));
+                // Mark successfully synced events
+                for (let i = 0; i < unsyncedEvents.length; i++) {
+                    const event = unsyncedEvents[i];
+                    
+                    if (i < result.success) {
+                        // Successfully synced
+                        await this.db.markAsSynced(event._id);
+                        this.stats.totalSynced++;
+                    } else {
+                        // Failed to sync - increment attempt counter for tracking only
+                        await this.db.markSyncAttempt(event._id);
+                        this.stats.totalFailed++;
+                    }
+                }
 
-            // Attempt batch insert
-            const result = await postgres.batchInsertPhotoCaptureEvents(batchData);
-
-            // Mark successfully synced events
-            for (let i = 0; i < eventsToSync.length; i++) {
-                const event = eventsToSync[i];
+                totalProcessed += unsyncedEvents.length;
+                console.log(`Batch complete: ${result.success} succeeded, ${result.failed} failed`);
                 
-                if (i < result.success) {
-                    // Successfully synced
-                    await this.db.markAsSynced(event._id);
-                    this.stats.totalSynced++;
-                } else {
-                    // Failed to sync - increment attempt counter
-                    await this.db.markSyncAttempt(event._id);
-                    this.stats.totalFailed++;
+                // If we got fewer records than batch size, we're done
+                if (unsyncedEvents.length < this.config.batchSize) {
+                    hasMore = false;
                 }
             }
 
@@ -165,14 +181,16 @@ class SyncWorker {
             this.stats.lastSyncStatus = 'success';
             this.stats.consecutiveFailures = 0;
 
-            console.log(`Sync complete: ${result.success} succeeded, ${result.failed} failed`);
+            if (totalProcessed > 0) {
+                console.log(`Sync session complete: processed ${totalProcessed} total events`);
+            }
 
         } catch (err) {
             this.stats.consecutiveFailures++;
             this.stats.lastSyncStatus = 'error';
             console.error('Sync batch failed:', err.message);
 
-            // Mark sync attempts for all unsynced events to prevent immediate retry
+            // Mark sync attempts for tracking purposes only
             try {
                 const unsyncedEvents = await this.db.getUnsyncedEvents(this.config.batchSize);
                 for (const event of unsyncedEvents) {

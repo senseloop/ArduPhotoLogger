@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const database = require('./database');
 const { convertTimestringToISO8601, replaceBigIntWithString } = require('./utils');
+const postgres = require('./postgres');
 
 
 const { initializeDatabase } = require('./database');
@@ -87,6 +88,22 @@ router.get('/', (req, res) => {
                 path: '/api/cleardatabase',
                 description: 'Clear all database records (requires confirmation)',
                 body: { confirm: 'DELETE_ALL_DATA' }
+            },
+            {
+                method: 'GET',
+                path: '/api/postgres/latest',
+                description: 'Fetch latest 100 records from PostgreSQL (query param: ?limit=N)',
+                queryParams: { limit: '100 (default)' }
+            },
+            {
+                method: 'POST',
+                path: '/api/postgres/test-write',
+                description: 'Test PostgreSQL write capability with one unsynced event'
+            },
+            {
+                method: 'POST',
+                path: '/api/sync/reset-failed',
+                description: 'Reset retry counter on failed events to retry syncing'
             }
         ]
     });
@@ -351,6 +368,138 @@ router.get('/sync/pending', async (req, res) => {
         });
     } catch (err) {
         res.status(500).json({ error: err.message });
+    }
+});
+
+// Fetch latest records from PostgreSQL
+router.get('/postgres/latest', async (req, res) => {
+    try {
+        // Initialize postgres connection if not already done
+        postgres.initializePostgres();
+        
+        // Get limit from query params or default to 100
+        const limit = parseInt(req.query.limit) || 100;
+        
+        if (limit < 1 || limit > 1000) {
+            return res.status(400).json({ 
+                error: 'Invalid limit',
+                message: 'Limit must be between 1 and 1000' 
+            });
+        }
+        
+        const records = await postgres.fetchLatestRecords(limit);
+        
+        res.json({
+            success: true,
+            count: records.length,
+            limit: limit,
+            records: records
+        });
+        
+    } catch (err) {
+        // Return detailed error information
+        res.status(500).json({
+            success: false,
+            error: 'Failed to fetch records from PostgreSQL',
+            message: err.message,
+            code: err.code,
+            detail: err.detail,
+            stack: err.stack,
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+// Test PostgreSQL write capability
+router.post('/postgres/test-write', async (req, res) => {
+    try {
+        // Initialize postgres connection if not already done
+        postgres.initializePostgres();
+        
+        // Test connection first
+        const isConnected = await postgres.testConnection();
+        if (!isConnected) {
+            return res.status(503).json({
+                success: false,
+                error: 'PostgreSQL connection failed',
+                message: 'Unable to connect to PostgreSQL'
+            });
+        }
+        
+        // Get one unsynced event from local DB
+        const unsyncedEvents = await db.getUnsyncedEvents(1);
+        
+        if (unsyncedEvents.length === 0) {
+            return res.json({
+                success: true,
+                message: 'No unsynced events to test with',
+                action: 'Create a photo capture event first'
+            });
+        }
+        
+        const event = unsyncedEvents[0];
+        
+        // Attempt to insert it
+        const batchData = [{
+            event: event,
+            localDbId: event._id
+        }];
+        
+        const result = await postgres.batchInsertPhotoCaptureEvents(batchData);
+        
+        res.json({
+            success: true,
+            message: 'Test write completed',
+            result: result,
+            testedEvent: {
+                id: event._id,
+                timestamp: event.timestamp,
+                lat: event.CameraFeedbackMessage?.lat,
+                lng: event.CameraFeedbackMessage?.lng
+            }
+        });
+        
+    } catch (err) {
+        // Return detailed error information
+        res.status(500).json({
+            success: false,
+            error: 'PostgreSQL write test failed',
+            message: err.message,
+            code: err.code,
+            detail: err.detail,
+            hint: err.hint,
+            constraint: err.constraint,
+            stack: err.stack,
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+// Reset failed sync attempts
+router.post('/sync/reset-failed', async (req, res) => {
+    try {
+        const result = await new Promise((resolve, reject) => {
+            db.update(
+                { synced: false, syncAttempts: { $gte: 5 } },
+                { $set: { syncAttempts: 0, lastSyncAttempt: null } },
+                { multi: true },
+                (err, numReplaced) => {
+                    if (err) reject(err);
+                    else resolve(numReplaced);
+                }
+            );
+        });
+        
+        res.json({
+            success: true,
+            message: `Reset ${result} events that had failed sync attempts`,
+            eventsReset: result
+        });
+    } catch (err) {
+        res.status(500).json({
+            success: false,
+            error: err.message
+        });
     }
 });
 

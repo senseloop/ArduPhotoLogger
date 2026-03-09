@@ -42,22 +42,30 @@ function initializePostgres() {
 
 // Test connection to PostgreSQL
 async function testConnection() {
-    console.log('=== Testing PostgreSQL Connection ===');
+    if (!pool) {
+        console.error('PostgreSQL pool not initialized');
+        return false;
+    }
+    
+    let client;
     try {
-        const client = await pool.connect();
-        console.log('Successfully acquired client from pool');
+        client = await pool.connect();
         const result = await client.query('SELECT NOW()');
-        console.log('Query executed successfully:', result.rows[0]);
         client.release();
-        console.log('Connection test PASSED');
         return true;
     } catch (err) {
         console.error('=== PostgreSQL Connection Test FAILED ===');
         console.error('Error message:', err.message);
         console.error('Error code:', err.code);
-        console.error('Error detail:', err.detail);
-        console.error('Error hint:', err.hint);
-        console.error('Error stack:', err.stack);
+        
+        // Release client if we acquired it
+        if (client) {
+            try {
+                client.release(true); // true = discard the client
+            } catch (releaseErr) {
+                // Ignore release errors
+            }
+        }
         return false;
     }
 }
@@ -162,7 +170,15 @@ async function batchInsertPhotoCaptureEvents(events) {
     }
 
     console.log(`=== Batch Inserting ${events.length} Photo Capture Events ===`);
-    const client = await pool.connect();
+    
+    let client;
+    try {
+        client = await pool.connect();
+    } catch (err) {
+        console.error('Failed to acquire database client:', err.message);
+        return { success: 0, failed: events.length };
+    }
+    
     const tableName = config.get('postgres', 'table');
     let success = 0;
     let failed = 0;
@@ -230,17 +246,26 @@ async function batchInsertPhotoCaptureEvents(events) {
         await client.query('COMMIT');
         console.log(`✓ Batch insert completed: ${success} succeeded, ${failed} failed`);
     } catch (err) {
-        await client.query('ROLLBACK');
+        try {
+            await client.query('ROLLBACK');
+        } catch (rollbackErr) {
+            console.error('Failed to rollback transaction:', rollbackErr.message);
+        }
         console.error('=== Batch Insert Transaction FAILED ===');
         console.error('Error message:', err.message);
         console.error('Error code:', err.code);
         console.error('Error detail:', err.detail);
-        console.error('Error stack:', err.stack);
         console.error(`Rolled back. ${success} succeeded before failure, ${failed} had failed`);
         throw err;
     } finally {
-        client.release();
-        console.log('Database client released');
+        if (client) {
+            try {
+                client.release(true); // true = discard potentially broken client
+                console.log('Database client released');
+            } catch (releaseErr) {
+                console.error('Error releasing client:', releaseErr.message);
+            }
+        }
     }
 
     return { success, failed };
@@ -255,10 +280,39 @@ async function closePool() {
     }
 }
 
+// Fetch latest records from PostgreSQL
+async function fetchLatestRecords(limit = 100) {
+    if (!pool) {
+        throw new Error('PostgreSQL pool not initialized. Call initializePostgres() first.');
+    }
+
+    const postgresConfig = config.get('postgres');
+    const tableName = postgresConfig.table || 'photo_captures';
+
+    try {
+        const query = `
+            SELECT * FROM ${tableName}
+            ORDER BY timestamp DESC
+            LIMIT $1
+        `;
+        
+        const result = await pool.query(query, [limit]);
+        return result.rows;
+    } catch (error) {
+        console.error('=== Error fetching records from PostgreSQL ===');
+        console.error('Error message:', error.message);
+        console.error('Error code:', error.code);
+        console.error('Error detail:', error.detail);
+        console.error('Error stack:', error.stack);
+        throw error;
+    }
+}
+
 module.exports = {
     initializePostgres,
     testConnection,
     insertPhotoCaptureEvent,
     batchInsertPhotoCaptureEvents,
+    fetchLatestRecords,
     closePool
 };

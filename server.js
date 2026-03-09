@@ -189,6 +189,15 @@ port.on('data', packet => {
         handlePhotoCapture(message);
     }
 
+    // Check for COMMAND_LONG (76) with command ID 31010
+    if(key == 76) {
+        const commandData = message.COMMAND_LONG || message;
+        if(commandData.command === 31010) {
+            datastore[31010] = commandData; 
+            console.log(datastore[31010]);
+        }
+    }
+
 
     //Sjekker om noen web socket clienter abonnerer på aktuell melding
     
@@ -219,10 +228,10 @@ port.on('data', packet => {
         });
     }
     
-    // Removed prog() call - no more asterisk spam
-    // if(process.stdout.isTTY){
-    //    prog();
-    // }	
+    // Visual indicator of MAVLink message reception
+    if(process.stdout.isTTY){
+       prog();
+    }	
 })
 
 
@@ -244,12 +253,21 @@ function handlePhotoCapture(cameraFeedbackMessage) {
         dateTimeCaptureISO : convertTimestringToISO8601(datastore[2].timeUnixUsec)
     }
 
+    // Extract just the CAMERA_FEEDBACK object to avoid duplication
+    const cameraData = cameraFeedbackMessage.CAMERA_FEEDBACK || cameraFeedbackMessage;
+    
+    // Extract just the MOUNT_ORIENTATION object to avoid duplication
+    const gimbalData = datastore[265]?.MOUNT_ORIENTATION || datastore[265];
+
+    const mastData = datastore[31010] || null; // Assuming this is where the MAST data would be stored
+
     // Assemble photoCapture event object
     const photoCaptureEvent = {
         timestamp : timestamp,
-        CameraFeedbackMessage : cameraFeedbackMessage,
-        GimbalOrientation : datastore[265],
+        CameraFeedbackMessage : cameraData,
+        GimbalOrientation : gimbalData,
         SystemTime : datastore[42],
+        Mastdata : mastData,
         Custom : customFields,
         hostname : getHostname()
     };
@@ -261,10 +279,15 @@ function handlePhotoCapture(cameraFeedbackMessage) {
     // You can store or send this event as needed
     db.insertPhotoCaptureEvent(photoCaptureEvent)
     .then(() => {
-        const lat = (cameraFeedbackMessage.lat / 1e7).toFixed(6);
-        const lng = (cameraFeedbackMessage.lng / 1e7).toFixed(6);
-        const alt = cameraFeedbackMessage.altRel?.toFixed(1) || 'N/A';
+        const lat = (cameraData.lat / 1e7).toFixed(6);
+        const lng = (cameraData.lng / 1e7).toFixed(6);
+        const alt = cameraData.altRel?.toFixed(1) || 'N/A';
         console.log(`📷 Photo captured at ${lat}, ${lng} | Alt: ${alt}m | ${customFields.dateTimeCaptureISO}`);
+        
+        // Trigger immediate sync to PostgreSQL
+        if (syncWorker) {
+            syncWorker.triggerImmediateSync();
+        }
     })
     .catch(error => {
         console.error('Error inserting photoCapture event into the database:', error);
@@ -294,9 +317,10 @@ function prog() {
 
 // Start the server
 const portNo = config.get('server', 'port');
+const host = config.get('server', 'host') || '0.0.0.0'; // Listen on all interfaces by default
 
-server.listen(portNo, async () => {
-    console.log(`Server and WebSocket listening on port ${portNo}`);
+server.listen(portNo, host, async () => {
+    console.log(`Server and WebSocket listening on ${host}:${portNo}`);
     
     // Start sync worker
     try {
