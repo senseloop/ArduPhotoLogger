@@ -23,6 +23,40 @@ let datastore = {};
 let newMessageList = {};
 let syncWorker = null;
 
+// Message buffering for periodic logging
+let mavlinkBuffer = {
+    messageCount: 0,
+    photoCaptureCount: 0,
+    uniqueMessageTypes: new Set(),
+    lastFlush: Date.now()
+};
+
+// Flush buffered MAVLink messages every 5 seconds
+function flushMavlinkBuffer() {
+    const now = Date.now();
+    if (now - mavlinkBuffer.lastFlush >= 5000) {
+        if (mavlinkBuffer.messageCount > 0) {
+            console.log('=== MAVLink Activity (last 5 seconds) ===');
+            console.log(`Messages received: ${mavlinkBuffer.messageCount}`);
+            console.log(`Unique message types: ${mavlinkBuffer.uniqueMessageTypes.size}`);
+            if (mavlinkBuffer.photoCaptureCount > 0) {
+                console.log(`Photo captures: ${mavlinkBuffer.photoCaptureCount}`);
+            }
+        }
+        
+        // Reset buffer
+        mavlinkBuffer = {
+            messageCount: 0,
+            photoCaptureCount: 0,
+            uniqueMessageTypes: new Set(),
+            lastFlush: now
+        };
+    }
+}
+
+// Start periodic buffer flushing
+setInterval(flushMavlinkBuffer, 5000);
+
 const { router, setDatastore } = require('./api');
 
 // Pass datastore reference to API
@@ -160,8 +194,10 @@ port.on('data', packet => {
     const message = getData(packet);
     if(message==null) return
     const msgid = packet.header.msgid;
-    // console.log(message);
     
+    // Buffer message statistics
+    mavlinkBuffer.messageCount++;
+    mavlinkBuffer.uniqueMessageTypes.add(msgid);
     
     // Sjekker om man tidligere har mottatt en melding med samme msgid, sysid og compid
     // Hvis ikke, skrives det ut en melding til konsollen
@@ -169,16 +205,9 @@ port.on('data', packet => {
 
     const longKey = `${packet.header.msgid}-${packet.header.sysid}-${packet.header.compid}`;
     if (!newMessageList.hasOwnProperty(longKey)) {
-        if(process.stdout.isTTY){
-	process.stdout.clearLine();
-        process.stdout.cursorTo(0);	
-	
-        // const currentTime = new Date().toLocaleTimeString('en-US', { hour12: false });
-        // const target = getTargetSystemAndComponent(message)
-        // console.log(`[${currentTime}] First message: ${message.msg_name} (${msgid}), from: ${packet.header.sysid}-${packet.header.compid} ${target ? `to: ${target.targetSystem}-${target.targetComponent}` : ''}`);
-
+        const currentTime = new Date().toLocaleTimeString('en-US', { hour12: false });
+        console.log(`[${currentTime}] First message: ${message.msg_name} (${msgid}), from: ${packet.header.sysid}-${packet.header.compid}`);
         newMessageList[longKey] = true;
-	}
     }
 
     //Overskriver data i datastore med ny melding
@@ -186,6 +215,7 @@ port.on('data', packet => {
 
     //Håndterer mottak av nyt PhotoCapture event
     if(key == 180 && config.get('features', 'photo_capture')){
+        mavlinkBuffer.photoCaptureCount++;
         handlePhotoCapture(message);
     }
 
@@ -197,7 +227,6 @@ port.on('data', packet => {
             console.log(datastore[31010]);
         }
     }
-
 
     //Sjekker om noen web socket clienter abonnerer på aktuell melding
     
@@ -227,11 +256,6 @@ port.on('data', packet => {
             }
         });
     }
-    
-    // Visual indicator of MAVLink message reception
-    if(process.stdout.isTTY){
-       prog();
-    }	
 })
 
 
@@ -292,26 +316,6 @@ function handlePhotoCapture(cameraFeedbackMessage) {
     .catch(error => {
         console.error('Error inserting photoCapture event into the database:', error);
     });
-}
-
-
-//Counter functionality to notice incoming data. 
-let iteration = 0;
-let count = 0;
-function prog() {
-    if (iteration > 5 ) {
-        process.stdout.write('*');
-        iteration = 0;
-        count++;
-    }
-    iteration += 1;
-    if (count > 30) {
-	
-        process.stdout.clearLine();
-        process.stdout.cursorTo(0);
-        count = 0;
-    }
-    iteration += 1;
 }
 
 

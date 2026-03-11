@@ -4,6 +4,57 @@ const config = require('./config');
 
 let pool = null;
 
+// Message buffering for periodic logging
+let messageBuffer = {
+    inserts: 0,
+    insertSuccesses: 0,
+    insertSkipped: 0,
+    insertErrors: [],
+    batchInserts: 0,
+    batchSuccesses: 0,
+    batchFailures: 0,
+    lastFlush: Date.now()
+};
+
+// Flush buffered messages every 5 seconds
+function flushMessageBuffer() {
+    const now = Date.now();
+    if (now - messageBuffer.lastFlush >= 5000) {
+        if (messageBuffer.inserts > 0 || messageBuffer.batchInserts > 0) {
+            console.log('=== PostgreSQL Activity (last 5 seconds) ===');
+            if (messageBuffer.inserts > 0) {
+                console.log(`Single inserts: ${messageBuffer.insertSuccesses} succeeded, ${messageBuffer.insertSkipped} skipped (duplicates)`);
+            }
+            if (messageBuffer.batchInserts > 0) {
+                console.log(`Batch inserts: ${messageBuffer.batchInserts} batches, ${messageBuffer.batchSuccesses} total succeeded, ${messageBuffer.batchFailures} total failed`);
+            }
+            if (messageBuffer.insertErrors.length > 0) {
+                console.log(`Errors in last 5 seconds: ${messageBuffer.insertErrors.length}`);
+                messageBuffer.insertErrors.forEach((err, idx) => {
+                    console.error(`  Error ${idx + 1}: [${err.code}] ${err.message}`);
+                    if (err.detail) console.error(`    Detail: ${err.detail}`);
+                    if (err.hint) console.error(`    Hint: ${err.hint}`);
+                });
+            }
+        }
+        
+        // Reset buffer
+        messageBuffer = {
+            inserts: 0,
+            insertSuccesses: 0,
+            insertSkipped: 0,
+            insertErrors: [],
+            batchInserts: 0,
+            batchSuccesses: 0,
+            batchFailures: 0,
+            lastFlush: now
+        };
+    }
+}
+
+// Start periodic buffer flushing
+setInterval(flushMessageBuffer, 5000);
+
 // Initialize PostgreSQL connection pool
 function initializePostgres() {
     if (pool) return pool;
@@ -113,35 +164,19 @@ async function insertPhotoCaptureEvent(event, localDbId) {
         event.hostname || null
     ];
 
-    console.log('=== Inserting Photo Capture Event ===');
-    console.log('Table:', tableName);
-    console.log('Local DB ID:', localDbId);
-    console.log('Values:', {
-        timestamp: values[0],
-        lat: values[1],
-        lng: values[2],
-        alt_msl: values[3],
-        alt_rel: values[4],
-        gimbal_pitch: values[5],
-        gimbal_roll: values[6],
-        gimbal_yaw: values[7],
-        gimbal_yaw_absolute: values[8],
-        capture_time_iso: values[9],
-        local_db_id: values[13],
-        hostname: values[14]
-    });
-
     try {
+        messageBuffer.inserts++;
         const result = await pool.query(query, values);
         if (result.rowCount > 0) {
-            console.log(`✓ Successfully inserted event with ID: ${result.rows[0].id}`);
+            messageBuffer.insertSuccesses++;
             return result.rows[0].id;
         } else {
-            console.log('⚠ Insert returned 0 rows (likely duplicate, ON CONFLICT triggered)');
+            messageBuffer.insertSkipped++;
             return null;
         }
     } catch (err) {
-        console.error('=== Failed to Insert Photo Capture Event ===');
+        // Always log critical errors immediately
+        console.error('=== CRITICAL: Failed to Insert Photo Capture Event ===');
         console.error('Error message:', err.message);
         console.error('Error code:', err.code);
         console.error('Error detail:', err.detail);
@@ -158,6 +193,13 @@ async function insertPhotoCaptureEvent(event, localDbId) {
             hostname: values[14]
         });
         console.error('Full error stack:', err.stack);
+        
+        messageBuffer.insertErrors.push({
+            code: err.code,
+            message: err.message,
+            detail: err.detail,
+            hint: err.hint
+        });
         throw err;
     }
 }
@@ -165,26 +207,16 @@ async function insertPhotoCaptureEvent(event, localDbId) {
 // Batch insert multiple photo capture events
 async function batchInsertPhotoCaptureEvents(events) {
     if (!events || events.length === 0) {
-        console.log('⚠ No events to batch insert');
         return { success: 0, failed: 0 };
     }
 
-    console.log(`=== Batch Inserting ${events.length} Photo Capture Events ===`);
-    
-    let client;
-    try {
-        client = await pool.connect();
-    } catch (err) {
-        console.error('Failed to acquire database client:', err.message);
-        return { success: 0, failed: events.length };
-    }
-    
+    messageBuffer.batchInserts++;
+    const client = await pool.connect();
     const tableName = config.get('postgres', 'table');
     let success = 0;
     let failed = 0;
 
     try {
-        console.log('Starting transaction...');
         await client.query('BEGIN');
 
         for (const { event, localDbId } of events) {
@@ -217,55 +249,49 @@ async function batchInsertPhotoCaptureEvents(events) {
                     event.hostname || null
                 ];
 
-                console.log(`  Processing event ${localDbId}...`);
-                const result = await client.query(query, values);
-                if (result.rowCount > 0) {
-                    console.log(`  ✓ Event ${localDbId} inserted successfully`);
-                } else {
-                    console.log(`  ⚠ Event ${localDbId} skipped (duplicate)`);
-                }
+                await client.query(query, values);
                 success++;
             } catch (err) {
-                console.error(`=== Failed to Insert Event ${localDbId} ===`);
-                console.error('Error message:', err.message);
-                console.error('Error code:', err.code);
-                console.error('Error detail:', err.detail);
-                console.error('Error hint:', err.hint);
-                console.error('Error constraint:', err.constraint);
-                console.error('Event data:', {
-                    timestamp: event.timestamp,
-                    lat: event.CameraFeedbackMessage?.lat,
-                    lng: event.CameraFeedbackMessage?.lng,
+                // Log first error of batch immediately for debugging
+                if (failed === 0) {
+                    console.error(`=== CRITICAL: First Batch Insert Error (Event ${localDbId}) ===`);
+                    console.error('Error message:', err.message);
+                    console.error('Error code:', err.code);
+                    console.error('Error detail:', err.detail);
+                    console.error('Error hint:', err.hint);
+                    console.error('Error constraint:', err.constraint);
+                    console.error('Event data:', {
+                        timestamp: event.timestamp,
+                        lat: event.CameraFeedbackMessage?.lat,
+                        lng: event.CameraFeedbackMessage?.lng,
+                        localDbId: localDbId
+                    });
+                }
+                messageBuffer.insertErrors.push({
+                    code: err.code,
+                    message: err.message,
+                    detail: err.detail,
+                    hint: err.hint,
                     localDbId: localDbId
                 });
                 failed++;
             }
         }
 
-        console.log('Committing transaction...');
         await client.query('COMMIT');
-        console.log(`✓ Batch insert completed: ${success} succeeded, ${failed} failed`);
+        messageBuffer.batchSuccesses += success;
+        messageBuffer.batchFailures += failed;
     } catch (err) {
-        try {
-            await client.query('ROLLBACK');
-        } catch (rollbackErr) {
-            console.error('Failed to rollback transaction:', rollbackErr.message);
-        }
-        console.error('=== Batch Insert Transaction FAILED ===');
+        await client.query('ROLLBACK');
+        console.error('=== CRITICAL: Batch Insert Transaction FAILED ===');
         console.error('Error message:', err.message);
         console.error('Error code:', err.code);
         console.error('Error detail:', err.detail);
+        console.error('Error stack:', err.stack);
         console.error(`Rolled back. ${success} succeeded before failure, ${failed} had failed`);
         throw err;
     } finally {
-        if (client) {
-            try {
-                client.release(true); // true = discard potentially broken client
-                console.log('Database client released');
-            } catch (releaseErr) {
-                console.error('Error releasing client:', releaseErr.message);
-            }
-        }
+        client.release();
     }
 
     return { success, failed };
